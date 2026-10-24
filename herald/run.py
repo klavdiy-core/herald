@@ -31,6 +31,12 @@ def load_config(path):
     for k in ("workspace", "control"):
         if not cfg.get(k):
             raise ValueError(f"{k} is required")
+    # claude runs with cwd=workspace, so every path is fixed here, relative to where herald starts
+    for k in ("workspace", "control", "persona_file"):
+        if cfg.get(k):
+            cfg[k] = os.path.abspath(cfg[k])
+    if (cfg.get("voice") or {}).get("model"):
+        cfg["voice"]["model"] = os.path.abspath(cfg["voice"]["model"])
     ws, ctl = os.path.realpath(cfg["workspace"]), os.path.realpath(cfg["control"])
     if ws == ctl or ws.startswith(ctl + os.sep) or ctl.startswith(ws + os.sep):
         raise ValueError("workspace and control must be separate folders, neither inside the other")

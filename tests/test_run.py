@@ -212,6 +212,24 @@ class ConfigTest(unittest.TestCase):
             c = run.load_config(self.write(d, self.base(d)))
             self.assertEqual(c["owners"], [OWNER])
 
+    def test_relative_paths_become_absolute_from_where_herald_starts(self):
+        # claude runs with cwd=workspace: a relative persona path broke the canary in a clean clone (24.10)
+        with tempfile.TemporaryDirectory() as d:
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                p = self.write(d, {"owners": [OWNER], "workspace": "ws", "control": "control",
+                                   "persona_file": "control/persona.md", "voice": {"model": "voices/v.onnx"}})
+                c = run.load_config(p)
+            finally:
+                os.chdir(old)
+            real = os.path.realpath(d)
+            for got, rel in ((c["workspace"], "ws"), (c["control"], "control"),
+                             (c["persona_file"], os.path.join("control", "persona.md")),
+                             (c["voice"]["model"], os.path.join("voices", "v.onnx"))):
+                self.assertTrue(os.path.isabs(got), got)
+                self.assertEqual(os.path.realpath(got), os.path.join(real, rel))
+
     def test_unknown_key_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(ValueError) as cm:
