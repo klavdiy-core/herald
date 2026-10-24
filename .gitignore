@@ -1,0 +1,8 @@
+.venv/
+voices/
+__pycache__/
+*.pyc
+control/
+workspace/
+*.wav
+*.ogg
