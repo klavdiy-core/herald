@@ -71,6 +71,7 @@ def _valid_state(s):
             and (s.get("session") is None or isinstance(s["session"], str))
             and s.get("voice") in ("off", "voice", "both")
             and (s.get("model") is None or isinstance(s["model"], str))
+            and (s.get("prev_session") is None or isinstance(s["prev_session"], str))
             and isinstance(s.get("since_nudge", 0), int))
 
 
@@ -257,19 +258,22 @@ class Herald:
 
     # ---------- learning: the owner approves every lesson ----------
     def _learn(self, chat_id):
-        sid = self._state()["session"]
+        s = self._state()
+        sid = s["session"] or s.get("prev_session")            # after /new, the session that just ended
         path = notebook.find_transcript(self.workspace, sid, self.roots) if sid else None
         if not path:
             return self.bot.send_text(chat_id, "Nothing to learn yet: no session transcript found.")
-        props = learning.propose(learning.analyze(path))
+        props = [p for p in learning.propose(learning.analyze(path)) if not self.nb.knows(p)]
         self.nb.set_pending(props)
         if not props:
-            return self.bot.send_text(chat_id, "Nothing repeated and nothing was corrected in this session.")
-        lines = []
-        for i, p in enumerate(props, 1):
+            return self.bot.send_text(chat_id, "Nothing new: nothing repeated or corrected that is not learned already.")
+        blocks = []
+        for i, p in enumerate(props, 1):                       # the text that would be kept, not only a title
             name = re.match(r"---\nname: (\S+)", p["draft"]) if p["kind"] == "skill" else None
-            lines.append(f"{i}. [{p['kind']}] {(name.group(1) + ': ') if name else ''}{p['title']} — {p['evidence']}")
-        self.bot.send_text(chat_id, "\n".join(lines)[:3500] + "\n\n/approve N · /drop N")
+            body = re.sub(r"(?s)^---.*?---\s*", "", p["draft"]).strip()
+            blocks.append(f"{i}. [{p['kind']}] {(name.group(1) + ': ') if name else ''}{p['title']}\n"
+                          f"{body[:400]}{' …' if len(body) > 400 else ''}")
+        self.bot.send_text(chat_id, "\n\n".join(blocks)[:3500] + "\n\n/approve N · /drop N")
 
     def _pick(self, chat_id, arg):
         props = self.nb.pending()
@@ -312,11 +316,16 @@ class Herald:
             lines.append("skills: " + (", ".join(sk) or "none"))
             self.bot.send_text(chat_id, "\n".join(lines)[:3500])
         elif cmd == "/forget":
+            name = arg.strip()
             try:
-                gone = self.nb.forget(int(arg))
-                self.bot.send_text(chat_id, f"Forgot: {gone[:200]}")
-            except (ValueError, IndexError):
-                self.bot.send_text(chat_id, "/forget N, with N from /memory")
+                if name and not name.isdigit():
+                    self.nb.forget_skill(name)
+                    self.bot.send_text(chat_id, f"Skill {name} is out of every turn (kept in learned/archive).")
+                else:
+                    gone = self.nb.forget(int(name))
+                    self.bot.send_text(chat_id, f"Forgot: {gone[:200]}")
+            except (ValueError, IndexError, KeyError):
+                self.bot.send_text(chat_id, "/forget N (a memory line) or /forget skill-name, both from /memory")
         elif cmd == "/stop":
             os.makedirs(self.control, exist_ok=True)    # even if someone deleted control/ under a running daemon
             open(self.stop_path, "w").close()
@@ -326,7 +335,8 @@ class Herald:
                 os.remove(self.stop_path)
             self.bot.send_text(chat_id, "Resumed.")
         elif cmd == "/new":
-            self._save(session=None)
+            old = self._state()["session"]
+            self._save(session=None, prev_session=old or self._state().get("prev_session"))   # /learn can still read it
             self.bot.send_text(chat_id, "New conversation.")
         elif cmd == "/voice" and arg.strip() in ("off", "voice", "both"):
             self._save(voice=arg.strip())

@@ -98,8 +98,10 @@ an error that happened again and again, the step that finally made a failing ste
 /approve N · /drop N
 ```
 
-`/approve 1` keeps it. From then on every turn gets your approved memory and skills in its system prompt. `/memory`
-shows what it keeps, `/forget N` removes a line. The store lives in `control/learned/`, where the model cannot write:
+The list shows the text that would be kept, so nothing is approved blind; what is learned already is not offered
+again, and after `/new` it reads the session that just ended. `/approve 1` keeps it. From then on every turn gets your
+approved memory and skills in its system prompt. `/memory` shows what it keeps, `/forget N` removes a line,
+`/forget skill-name` takes a skill out (it is archived, not deleted). The store lives in `control/learned/`, where the model cannot write:
 it learns nothing you did not approve. After a long turn it reminds you once: "/learn to keep what worked".
 
 The analysis is plain code, no model. On real sessions it ignores what is not a mistake: red test runs done on
@@ -112,7 +114,9 @@ It works on any Claude Code transcript too, without Telegram:
 python -m herald learn ~/.claude/projects/<project>/<session>.jsonl --private --out proposals.md
 ```
 
-`--private` keeps only the mechanics (tools, error lines, what fixed them) and drops every quoted message.
+`--private` keeps only the mechanics (tools, error lines, what fixed them) and drops every quoted message; words the
+human typed that could be private (with digits, ALL CAPS, names inside a sentence) are masked even when an error line
+echoes them.
 `--ignore REGEX` marks outputs that are signals, not failures.
 
 For a team of sessions (each started with `claude --name <role>`), one call reads a whole project folder:
@@ -164,7 +168,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-165 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+175 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

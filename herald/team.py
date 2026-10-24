@@ -27,7 +27,8 @@ def title(path):
 
 def _merge(reports):
     groups = OrderedDict()
-    out = {"repeated_errors": [], "recoveries": [], "corrections": []}
+    out = {"repeated_errors": [], "recoveries": [], "corrections": [],
+           "typed": sorted({w for r in reports for w in r.get("typed", [])})}
     for r in reports:
         for g in r["repeated_errors"]:
             m = groups.setdefault(g["signature"], dict(g, count=0, tools=[]))
@@ -52,24 +53,35 @@ def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None):
         if role:
             by_role.setdefault(role, []).append(p)
     os.makedirs(out_dir, exist_ok=True)
+    reps = OrderedDict((role, _merge([learning.analyze(p, ignore, min_repeat=1) for p in paths]))
+                       for role, paths in by_role.items())
+    typed = sorted({w for r in reps.values() for w in r["typed"]}) if private else []   # every role's typed words
     res = {"roles": OrderedDict()}
-    seen = {}                                   # signature -> {role: count}
-    for role, paths in by_role.items():
-        rep = _merge([learning.analyze(p, ignore, min_repeat=1) for p in paths])
+    seen, fixes = {}, {}                         # signature -> {role: count}; signature -> (fix, role)
+
+    def show(s):
+        return learning._scrub(learning.redact(s, private), typed)
+
+    for role, rep in reps.items():
+        rep["typed"] = typed
         for g in rep["all_errors"]:
-            sig = learning.redact(g["signature"], private)
-            if sig == learning.WITHHELD:
+            if learning.redact(g["signature"], private) == learning.WITHHELD:
                 continue
+            sig = show(g["signature"])
             seen.setdefault(sig, {})[role] = seen.get(sig, {}).get(role, 0) + g["count"]
+        for r in rep["recoveries"]:
+            fixes.setdefault(show(r["signature"]), (learning._scrub(learning._short(r["fix_input"], private), typed),
+                                                    role))
         props = learning.propose(rep, private=private)
         with open(os.path.join(out_dir, f"{role}.md"), "w", encoding="utf-8") as f:
-            f.write(learning.render_md(props, source=f"{role}, {len(paths)} session(s)"))
-        res["roles"][role] = {"sessions": len(paths), "proposals": len(props)}
+            f.write(learning.render_md(props, source=f"{role}, {len(by_role[role])} session(s)"))
+        res["roles"][role] = {"sessions": len(by_role[role]), "proposals": len(props)}
     shared = sorted(((s, r) for s, r in seen.items() if len(r) >= 2), key=lambda x: -sum(x[1].values()))
     lines = ["# Team learning", "", "| role | sessions | proposals |", "|---|---|---|"]
     lines += [f"| [{k}]({k}.md) | {v['sessions']} | {v['proposals']} |" for k, v in res["roles"].items()]
-    lines += ["", "## Shared: errors more than one role hit", ""]
-    lines += [f"- `{s}` — " + ", ".join(f"{k} {n}x" for k, n in r.items()) for s, r in shared] or ["(none)"]
+    lines += ["", "## Shared: errors more than one role hit (with a fix one of them found)", ""]
+    lines += [f"- `{s}` — " + ", ".join(f"{k} {n}x" for k, n in r.items())
+              + (f" — fixed in {fixes[s][1]} by `{fixes[s][0]}`" if s in fixes else "") for s, r in shared] or ["(none)"]
     with open(os.path.join(out_dir, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     res["shared"] = shared

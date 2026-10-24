@@ -16,7 +16,7 @@ EXIT_LINE = re.compile(r"^Exit code (\d+)$", re.M)
 ERROR_LINE = re.compile(r"error|exception|denied|not found|no such|cannot|can't|failed|reserved|invalid|refused|"
                         r"timed out|ошибк|не найден|не удается|не удаётся|отказано", re.I)
 CORRECTION = re.compile(
-    r"^\s*(no\b|nope\b|wrong\b|not that\b|stop\b|that's not\b|нет\b|не так\b|не то\b|стоп\b|неправильно\b)"
+    r"^\s*(no\b|nope\b|wrong\b|not that\b|that's not\b|нет\b|не так\b|не то\b|неправильно\b)"   # "stop, ..." is an order
     r"|\b(again|you forgot|i said|i told you|still (wrong|broken)|опять|снова|ты забыл|я же (сказала?|говорила?)|"
     r"ещё раз|не работает|сломал)"
     # a plain observation that the claim did not hold ("тесты не запустились", found missing on a real session)
@@ -79,8 +79,23 @@ def signature(text):
         line = next((l for l in lines if ERROR_LINE.search(l)), lines[0])
     line = re.sub(r"[A-Za-z]:\\[^\s'\"]+|/(?:[\w.-]+/)+[\w.-]+", "<path>", line)
     line = re.sub(r"\b[0-9a-f]{8,}\b", "<id>", line)
-    line = re.sub(r"\d+", "N", line)
+    line = re.sub(r"(?<![A-Za-z_])\d+(?:\.\d+)*", "N", line)      # line 3 -> N, but jinja2 stays jinja2
     return re.sub(r"\s+", " ", line)[:160]
+
+
+def _private_words(text):
+    """Words in a human message that could be a secret or a name: with a digit, ALL CAPS, CamelCase, or capitalized
+    inside a sentence. Plain lowercase words are left alone (masking them garbled every error line on a real run)."""
+    out, prev = set(), "."
+    for m in re.finditer(r"[^\W_]+|[^\w\s]", text):
+        w = m.group(0)
+        if len(w) >= 4 and w[0].isalnum():
+            if (any(c.isdigit() for c in w) or (w.isupper() and w.isalpha()) or any(c.isupper() for c in w[1:])
+                    or (w[0].isupper() and prev not in ".!?:")):
+                out.add(w)
+        if not w[0].isspace():
+            prev = w if not w[0].isalnum() else "w"
+    return out
 
 
 def _events(path):
@@ -91,7 +106,8 @@ def _events(path):
                 rec = json.loads(raw)
             except ValueError:
                 continue
-            if not isinstance(rec, dict) or rec.get("isMeta"):     # injected skill / command text is not a human
+            # injected skill / command text and the summary written after a compaction are not the human
+            if not isinstance(rec, dict) or rec.get("isMeta") or rec.get("isCompactSummary"):
                 continue
             msg = rec.get("message") or {}
             content, ts = msg.get("content"), rec.get("timestamp", "")
@@ -192,7 +208,9 @@ def analyze(path, ignore=None, min_repeat=2):
                 corrections.append({"claim": last_say["text"].strip()[:300], "correction": e["text"].strip()[:300],
                                     "ts": e["ts"]})
             last_say = None
-    return {"repeated_errors": repeated, "recoveries": recoveries, "corrections": corrections,
+    # words the human typed that could be private: in private mode they are masked wherever they turn up
+    typed = sorted({w.lower() for e in ev if e["kind"] == "human" for w in _private_words(e["text"])})
+    return {"repeated_errors": repeated, "recoveries": recoveries, "corrections": corrections, "typed": typed,
             "calls": len(calls), "failed_calls": sum(1 for c in calls if not c["ok"])}
 
 
@@ -207,19 +225,34 @@ def redact(sig, private=True):
 
 
 def _short(inp_head, private):
-    """In private mode a command is cut to program + first argument (a typed message can ride inside a command)."""
-    return " ".join(inp_head.split()[:2]) if private else inp_head
+    """In private mode a command loses its quoted parts (a typed message rides there) and is cut to a few words."""
+    if not private:
+        return inp_head
+    bare = re.sub(r"\"[^\"]*\"|'[^']*'", '"..."', inp_head)
+    return " ".join(bare.split()[:6])[:80]
+
+
+def _scrub(s, typed):
+    """Mask every word the human typed (private mode)."""
+    if not typed:
+        return s
+    rx = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(map(re.escape, typed)) + r")(?![A-Za-z0-9])", re.I)
+    return rx.sub("<typed>", s)
 
 
 def propose(report, private=False):
     if private:
         # a withheld output teaches nothing readable: it is dropped, not shown as a blank lesson
+        # and every word the human typed is masked: an error line or a command can echo it
+        typed = report.get("typed", [])
+        sig = lambda s: _scrub(redact(s), typed)                                       # noqa: E731
         report = dict(report,
-                      repeated_errors=[dict(g, signature=redact(g["signature"])) for g in report["repeated_errors"]
+                      repeated_errors=[dict(g, signature=sig(g["signature"])) for g in report["repeated_errors"]
                                        if redact(g["signature"]) != WITHHELD],
-                      recoveries=[dict(r, signature=redact(r["signature"]), fix_input=_short(r["fix_input"], True),
-                                       failed_input=_short(r["failed_input"], True)) for r in report["recoveries"]
-                                  if redact(r["signature"]) != WITHHELD])
+                      recoveries=[dict(r, signature=sig(r["signature"]),
+                                       fix_input=_scrub(_short(r["fix_input"], True), typed),
+                                       failed_input=_scrub(_short(r["failed_input"], True), typed))
+                                  for r in report["recoveries"] if redact(r["signature"]) != WITHHELD])
     props = []
     fixes = {}
     for r in report["recoveries"]:

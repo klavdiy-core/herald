@@ -7,6 +7,7 @@ in without the owner's /approve).
 import json
 import os
 import re
+import time
 
 MEMORY_CAP = 2200          # Hermes keeps MEMORY.md near this; the prompt stays small
 SKILLS_CAP = 8000
@@ -72,6 +73,8 @@ class Notebook:
             return [e.strip() for e in f.read().split(SEP) if e.strip()]
 
     def add_memory(self, line):
+        if line.strip() in self.memory():
+            return                        # approving the same lesson twice keeps one line
         entries = self.memory() + [line.strip()]
         if len(SEP.join(entries)) > MEMORY_CAP:
             raise Full(f"memory is full ({MEMORY_CAP} chars): /forget something first")
@@ -109,6 +112,24 @@ class Notebook:
             draft = old.rstrip("\n") + "\n" + "".join("\n" + s.rstrip("\n") + "\n" for s in new)
         _write(os.path.join(self.dir, "skills", name, "SKILL.md"), draft)
         return name
+
+    def forget_skill(self, name):
+        """Out of every prompt, but kept: moved to learned/archive/ (Hermes archives, never deletes)."""
+        src = os.path.join(self.dir, "skills", name)
+        if not NAME.match(name) or not os.path.isdir(src):
+            raise KeyError(name)
+        dst = os.path.join(self.dir, "archive", f"{name}-{time.strftime('%Y%m%d-%H%M%S')}")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.replace(src, dst)
+        return dst
+
+    def knows(self, prop):
+        """True when an approved lesson already holds this proposal."""
+        if prop["kind"] == "memory":
+            return prop["draft"].strip() in self.memory()
+        m = re.match(r"---\nname: (\S+)", prop["draft"])
+        old = self.skills().get(m.group(1)) if m else None
+        return bool(old) and set(_sections(prop["draft"])) <= set(_sections(old))
 
     # ---------- proposals waiting for the owner ----------
     def pending(self):
