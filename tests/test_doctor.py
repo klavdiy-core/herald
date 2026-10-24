@@ -102,6 +102,27 @@ class StaticChecksTest(unittest.TestCase):
         self.assertFalse(r.fatal)
 
 
+class TokenLiveTest(unittest.TestCase):
+    def test_get_me_proves_the_token(self):
+        sys.path.insert(0, os.path.dirname(__file__))
+        from fake_telegram import FakeTelegram
+        from herald import telegram
+        api = FakeTelegram()
+        try:
+            bot = telegram.Bot(TOKEN, owners={1}, api_base=api.url)
+            api.replies["getMe"] = [(200, {"ok": True, "result": {"username": "my_herald_bot", "is_bot": True}})]
+            r = doctor.check_token_live(bot)
+            self.assertTrue(r.ok)
+            self.assertIn("my_herald_bot", r.detail)
+            api.replies["getMe"] = [(401, {"ok": False, "error_code": 401, "description": "Unauthorized"})]
+            r = doctor.check_token_live(bot)
+            self.assertFalse(r.ok)
+            self.assertTrue(r.fatal)
+            self.assertNotIn(TOKEN.split(":")[1], r.detail)
+        finally:
+            api.close()
+
+
 class ReportTest(unittest.TestCase):
     def test_fatal_failure_blocks_start_degradable_does_not(self):
         ok = doctor.Check("a", True, "fine")

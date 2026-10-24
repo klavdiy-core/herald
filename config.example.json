@@ -1,0 +1,26 @@
+{
+  "owners": [123456789],
+  "workspace": "workspace",
+  "control": "control",
+  "model": "claude-sonnet-5-5",
+  "max_turns": 20,
+  "max_budget_usd": 1.0,
+  "timeout_s": 600,
+  "tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+  "persona_file": "control/persona.md",
+  "voice": {
+    "model": "voices/en_US-lessac-medium.onnx",
+    "piper_cmd": ["piper"],
+    "link_word": "link"
+  },
+  "speak_first": {
+    "enabled": false,
+    "per_day": 3,
+    "min_gap_min": 180,
+    "quiet": ["22:00", "09:00"],
+    "max_unanswered": 2
+  },
+  "jobs": [
+    {"name": "morning", "prompt": "Look at memory/ and say good morning if there is something worth saying.", "at": "09:30"}
+  ]
+}

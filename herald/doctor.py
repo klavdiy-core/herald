@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 
-from . import engine
+from . import engine, telegram
 from .telegram import TOKEN_SHAPE
 
 SECRET = "CANARY-OUTSIDE-7731"
@@ -48,6 +48,15 @@ def check_token(token):
     if not TOKEN_SHAPE.match(token):
         return Check("token", False, "HERALD_TELEGRAM_TOKEN does not look like <digits>:<secret> (not printed)")
     return Check("token", True, "set, shape ok (not printed)")
+
+
+def check_token_live(bot):
+    """getMe: a token of the right shape can still be wrong; without this `run` would just log 401s."""
+    try:
+        me = bot._call("getMe") or {}
+    except telegram.TelegramError as e:
+        return Check("telegram", False, f"getMe failed: {e}")
+    return Check("telegram", True, f"bot @{me.get('username', '?')}")
 
 
 def check_owners(owners):
@@ -123,6 +132,8 @@ def run_all(cfg, token, owners, voice_model, live=True):
     def help_text():
         return subprocess.run(list(cfg.claude_cmd) + ["--help"], capture_output=True, text=True, timeout=30).stdout
     checks = [check_claude_flags(help_text), check_token(token), check_owners(owners)]
+    if live and checks[1].ok and owners:
+        checks.append(check_token_live(telegram.Bot(token, owners=set(owners))))
     ff = check_ffmpeg()
     checks += [ff, check_voice(voice_model, ff.ok)]
     if live and checks[0].ok:
