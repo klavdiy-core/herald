@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 
-from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, speak_first, telegram, voice
+from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, room_web, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
@@ -152,7 +152,9 @@ class Herald:
     # ---------- out ----------
     def _reply(self, chat_id, text, spoken=None):
         self.bot.send_text(chat_id, text)
-        spoken = text if spoken is None else spoken
+        self._speak(chat_id, text if spoken is None else spoken)
+
+    def _speak(self, chat_id, spoken):
         if self._state()["voice"] == "off" or not self.synth or not voice.speakable(spoken):
             return
         out = os.path.join(self.control, "last.ogg")
@@ -419,6 +421,7 @@ class Herald:
                                    meta={"room": key, "record": r.record_path})
         self.bot.send_buttons(chat_id, f"Room on «{r.topic}», summary (${r.spent:.3f}):\n\n{summary}"[:4000],
                               [("Accept", f"d:{did}:0"), ("One more round", f"d:{did}:1"), ("Postpone", f"d:{did}:p")])
+        self._speak(chat_id, room_web.speech(summary))           # heard too, when /voice is on
 
     def _room_choice(self, chat_id, d):
         r = self.live_rooms.get(d["meta"].get("room"))
@@ -563,6 +566,20 @@ def room_agents(cfg, claude_cmd=None):
         if a.name in out:
             raise ValueError(f"two agents are named {a.name}")
         out[a.name] = a
+    return out
+
+
+def room_voices(cfg):
+    """{agent name: VoiceConfig} for agents with a "voice": {"model": ..., "length_scale": ...} entry; piper itself
+    comes from the main "voice" block when there is one."""
+    base = cfg.get("voice") or {}
+    out = {}
+    for e in cfg.get("agents") or []:
+        v = e.get("voice")
+        if isinstance(v, dict) and v.get("model"):
+            out[e["name"]] = voice.VoiceConfig(**{k: base[k] for k in ("piper_cmd", "link_word") if k in base},
+                                               model=os.path.abspath(v["model"]),
+                                               length_scale=float(v.get("length_scale", 1.0)))
     return out
 
 

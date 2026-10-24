@@ -4,19 +4,48 @@ Serves on 127.0.0.1 only, behind a random token in the link. Standard library on
 page, JSON endpoints polled by the page. The room runs in a background thread; the owner's levers set flags.
 """
 import json
+import os
+import re
 import secrets
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import room as roomlib
+from . import room as roomlib, voice
+
+
+def speech(text, limit=600):
+    """What is read aloud: no markdown marks, no code, cut at a sentence end near the limit."""
+    t = voice.clean_for_speech(re.sub(r"\*\*|__|`|#+ ", "", text))
+    if len(t) <= limit:
+        return t
+    cut = max(t.rfind(". ", 0, limit), t.rfind("! ", 0, limit), t.rfind("? ", 0, limit))
+    return t[:cut + 1] if cut > limit // 3 else t[:limit]
 
 
 class State:
-    def __init__(self, agents, record_dir, judge, pace_s):
+    def __init__(self, agents, record_dir, judge, pace_s, synth=None, voices=None):
         self.agents, self.record_dir, self.judge, self.pace_s = agents, record_dir, judge, pace_s
         self.room, self.target, self.thread, self.ended = None, 0, None, False
+        self.synth, self.voices, self.started = synth, voices or {}, 0   # voices: agent name -> its voice
+        self.audio_dir = os.path.join(record_dir or tempfile.gettempdir(), "audio")
+
+    def audio(self, i):
+        """The i-th event read aloud in its speaker's voice (cached), or None."""
+        ev = self.room.events if self.room else []
+        if not self.synth or not (0 <= i < len(ev)):
+            return None
+        e = ev[i]
+        if e.get("type") != "message" or e.get("speaker") not in self.voices or e.get("held"):
+            return None
+        path = os.path.join(self.audio_dir, f"{self.started}-{i}.ogg")
+        if not os.path.exists(path):
+            os.makedirs(self.audio_dir, exist_ok=True)
+            self.synth(speech(e["text"]), path, self.voices[e["speaker"]])
+        with open(path, "rb") as f:
+            return f.read()
 
     def start(self, body):
         topic = str(body.get("topic") or "").strip()
@@ -31,7 +60,7 @@ class State:
                                          for s in seats], fmt=fmt,
                                  budget_usd=float(budget) if budget else None, judge=self.judge,
                                  record_dir=self.record_dir)
-        self.target, self.ended = len(roomlib.PHASES[fmt]), False
+        self.target, self.ended, self.started = len(roomlib.PHASES[fmt]), False, int(time.time() * 1000)
         self.room._emit("started", topic=topic, format=fmt,
                         seats=[{"name": s.agent.name, "role": s.role} for s in self.room.seats])
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -106,7 +135,14 @@ def handler_for(state, token):
                 return self._out(200, PAGE, "text/html")
             if path == "/api/roster":
                 return self._out(200, {"agents": list(state.agents), "roles": list(roomlib.ROLES),
-                                       "formats": list(roomlib.PHASES), "judge": state.judge is not None})
+                                       "formats": list(roomlib.PHASES), "judge": state.judge is not None,
+                                       "voices": sorted(state.voices) if state.synth else []})
+            if path == "/api/audio":
+                try:
+                    data = state.audio(int(q.get("i", ["-1"])[0]))
+                except (ValueError, voice.VoiceError, OSError):
+                    data = None
+                return self._out(200, data, "audio/ogg") if data else self._out(404, {"error": "no audio"})
             if path == "/api/events":
                 ev = state.room.events if state.room else []
                 since = int(q.get("since", ["0"])[0] or 0)
@@ -132,9 +168,9 @@ def handler_for(state, token):
     return H
 
 
-def serve(agents, record_dir=None, judge=None, port=8765, pace_s=0.3, background=True):
+def serve(agents, record_dir=None, judge=None, port=8765, pace_s=0.3, background=True, synth=None, voices=None):
     token = secrets.token_urlsafe(16)
-    state = State(agents, record_dir, judge, pace_s)
+    state = State(agents, record_dir, judge, pace_s, synth, voices)
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler_for(state, token))
     srv.token, srv.state = token, state
     srv.url = f"http://127.0.0.1:{srv.server_port}/?t={token}"
@@ -167,7 +203,8 @@ border-radius:7px;padding:6px 8px;width:100%}button{cursor:pointer;width:auto}bu
 <label>Format</label><select id="fmt"></select>
 <label>Budget, $</label><input id="budget" type="number" step="0.05" value="0.50">
 <label>Who sits in the room, and their role this time</label><div id="seats"></div>
-<p class="sys" id="judge"></p><button class="main" onclick="start()">Start</button></section>
+<p class="sys" id="judge"></p><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="speak" style="width:auto"> Voices: read replies aloud</label>
+<button class="main" onclick="start()">Start</button></section>
 <section><h1 id="title">Not started</h1><div class="sys" id="status"></div>
 <div class="bar"><button onclick="ctl('pause')">Pause</button><button onclick="ctl('resume')">Resume</button>
 <button onclick="ctl('more')">One more round</button><button onclick="ctl('end')">End and sum up</button></div>
@@ -184,14 +221,17 @@ const md=s=>esc(s).replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>').replace(/`([^`\n]+)
 api('/api/roster').then(r=>{roster=r;fmt.innerHTML=r.formats.map(f=>`<option>${f}</option>`).join('');
  seats.innerHTML=r.agents.map((a,i)=>{idx[a]=colors[i%colors.length];return `<div class="seat"><input type="checkbox" checked data-a="${esc(a)}">
  <span style="color:${idx[a]}">${esc(a)}</span><select>${r.roles.map(x=>`<option>${x}</option>`).join('')}</select></div>`}).join('');
- next.innerHTML=r.agents.map(a=>`<option>${esc(a)}</option>`).join('');judge.textContent=r.judge?'Moderator: Jev checks every reply for attacks.':'Moderator: off (no TYPESAFE_API_KEY).'});
+ next.innerHTML=r.agents.map(a=>`<option>${esc(a)}</option>`).join('');judge.textContent=(r.judge?'Moderator: Jev checks every reply for attacks.':'Moderator: off (no TYPESAFE_API_KEY).')+(r.voices.length?' Voices: '+r.voices.join(', ')+'.':'')});
 function start(){const s=[...seats.querySelectorAll('.seat')].filter(d=>d.querySelector('input').checked)
  .map(d=>({name:d.querySelector('input').dataset.a,role:d.querySelector('select').value}));
  api('/api/start',{topic:topic.value,format:fmt.value,budget_usd:budget.value,seats:s}).then(r=>{if(r.error)alert(r.error)})}
 const ctl=a=>api('/api/control',{action:a});const say=()=>{api('/api/control',{action:'inject',text:sayEl().value});sayEl().value=''};
 const sayEl=()=>document.getElementById('say');const nxt=()=>api('/api/control',{action:'next',name:next.value});
 const deeper=()=>api('/api/control',{action:'deeper',text:deep.value});
-function show(e){const f=feed;if(e.type==='message'){const c=e.speaker==='Owner'?'#888':idx[e.speaker];
+let queue=[],playing=false;function playNext(){if(playing||!queue.length)return;playing=true;const a=new Audio(q('/api/audio?i='+queue.shift()));
+ a.onended=a.onerror=()=>{playing=false;playNext()};a.play().catch(()=>{playing=false;playNext()})}
+function show(e,i){const f=feed;if(e.type==='message'&&speak.checked&&roster.voices.includes(e.speaker)){queue.push(i);playNext()}
+ if(e.type==='message'){const c=e.speaker==='Owner'?'#888':idx[e.speaker];
  f.insertAdjacentHTML('beforeend',`<div class="msg" style="--c:${c}"><span class="who">${esc(e.speaker)}</span><span class="role">${esc(e.role)}</span>\n${md(e.text)}</div>`);f.scrollTop=1e9}
  else if(e.type==='started'){title.textContent=e.topic;f.innerHTML='';summary.textContent=''}
  else if(e.type==='summary'){summary.innerHTML='<b>Summary</b>\n\n'+md(e.text)}
@@ -199,6 +239,6 @@ function show(e){const f=feed;if(e.type==='message'){const c=e.speaker==='Owner'
  else{const t={round:'Round '+e.n+' done. Next: '+e.next,moderated:e.speaker+"'s reply was sent back: about the idea, not the person",
  budget:'Budget reached',paused:'Paused',resumed:'Resumed',waiting:e.text,focus:'Going deeper on: '+e.text}[e.type];
  if(t)f.insertAdjacentHTML('beforeend',`<div class="sys">${esc(t)}</div>`)}}
-setInterval(()=>api('/api/events?since='+since).then(r=>{r.events.forEach(show);since=r.next;
+setInterval(()=>api('/api/events?since='+since).then(r=>{r.events.forEach((e,k)=>show(e,since+k));since=r.next;
  if(r.events.length&&!r.events.some(e=>e.type==='thinking'))status.textContent='spent $'+r.spent.toFixed(4)}),800);
 </script></body></html>"""

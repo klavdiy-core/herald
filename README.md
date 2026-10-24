@@ -189,6 +189,12 @@ that reads the question (on stdin, or as its last argument) and prints the answe
 "room": {"port": 8765}
 ```
 
+**Voices.** Give an agent `"voice": {"model": "voices/ru_RU-irina-medium.onnx"}` and tick "Voices" on the page:
+each reply is read aloud in its own voice, one after another (local piper, no cloud; markdown and code are not read;
+the audio is cached per reply). With `/voice both` in Telegram, a room's summary comes as a voice message too.
+Checked live with four Russian piper voices (dmitri, ruslan, irina, denis): every line came back intelligible through
+speech recognition.
+
 **What is confined and what is not.** A Claude role is confined like every herald turn (Claude Code's
 `--restricted`, its own empty folder, Read only). A `command` agent is an ordinary program you chose: herald only
 gives it an empty folder of its own and the same allow-listed environment as a Claude turn (no bot token, no
@@ -239,7 +245,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-240 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+246 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

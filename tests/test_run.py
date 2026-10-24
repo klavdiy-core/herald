@@ -389,6 +389,20 @@ class ConfigTest(unittest.TestCase):
             self.assertTrue(ag["Raven"].ws.startswith(os.path.realpath(cfg["control"])) or
                             ag["Raven"].ws.startswith(cfg["control"]))      # agents live in control/, not the workspace
 
+    def test_room_voices_come_from_the_agents_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": os.path.join(d, "c"),
+                           "voice": {"piper_cmd": ["py", "-m", "piper"], "model": "voices/a.onnx"},
+                           "agents": [{"name": "Raven", "kind": "claude", "voice": {"model": "voices/r.onnx",
+                                                                                      "length_scale": 0.9}},
+                                      {"name": "Owl", "kind": "claude"}]}, f)
+            v = run.room_voices(run.load_config(p))
+            self.assertEqual(list(v), ["Raven"])
+            self.assertTrue(os.path.isabs(v["Raven"].model))
+            self.assertEqual((v["Raven"].piper_cmd, v["Raven"].length_scale), (["py", "-m", "piper"], 0.9))
+
     def test_two_agents_with_one_name_are_refused(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "c.json")

@@ -58,8 +58,10 @@ def main(argv=None):
             ap.error('add an "agents" list to the config first (see README, "The room")')
         rc = cfg.get("room") or {}
         judge = jev.from_env()
+        vs = run.room_voices(cfg)
         srv = room_web.serve(ag, record_dir=os.path.join(cfg["control"], "rooms"), judge=judge,
-                             port=rc.get("port", 8765), pace_s=rc.get("pace_s", 0.3), background=False)
+                             port=rc.get("port", 8765), pace_s=rc.get("pace_s", 0.3), background=False,
+                             synth=voice.synth if vs else None, voices=vs)
         print(f"room: {srv.url}\nmoderator: {'Jev' if judge else 'off (set TYPESAFE_API_KEY)'} · Ctrl+C to stop")
         try:
             srv.serve_forever()
