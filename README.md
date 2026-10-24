@@ -56,6 +56,9 @@ model could not write at all, and with it alone it could write `CLAUDE.md`.
 - Commands: `/stop` (no turns, no speaking first, until `/resume`) · `/resume` · `/new` (fresh conversation) ·
   `/voice off|voice|both` · `/status`.
 - The token never appears in errors or logs.
+- `/stop` is handled before anything else and needs no state: a broken state file cannot block it. A state file that
+  cannot be read is kept as `*.bad`; speaking first then stays quiet until you write. An update that crashes its
+  handler is logged and passed, never polled again in a loop.
 
 ## Hearing: voice and text in one conversation
 
@@ -140,7 +143,7 @@ The difference: Hermes writes its skills itself, herald only proposes.
 python -m unittest discover -s tests
 ```
 
-159 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+147 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

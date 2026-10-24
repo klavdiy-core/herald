@@ -64,10 +64,15 @@ class Gate:
     def _load(self):
         if not os.path.exists(self.state_path):
             return {"sent": [], "unanswered": 0, "jobs": {}}
-        with open(self.state_path, encoding="utf-8") as f:
-            s = json.load(f)
-        if not isinstance(s.get("sent"), list) or not isinstance(s.get("unanswered"), int):
-            raise ValueError("unexpected shape")
+        try:
+            with open(self.state_path, encoding="utf-8") as f:
+                s = json.load(f)
+            if not isinstance(s, dict) or not isinstance(s.get("sent"), list) or not isinstance(s.get("unanswered"), int):
+                raise ValueError("unexpected shape")
+        except (ValueError, OSError):
+            # unreadable: keep it for a look, and fail closed (silent until the owner writes), never crash /stop
+            os.replace(self.state_path, self.state_path + ".bad")
+            return {"sent": [], "unanswered": self.limits.max_unanswered, "jobs": {}, "broken": True}
         s.setdefault("jobs", {})
         return s
 
@@ -88,6 +93,8 @@ class Gate:
             s = self._load()
         except (OSError, ValueError) as e:
             return False, f"state unreadable, staying quiet: {e}"
+        if s.pop("broken", False):
+            return False, "state unreadable (kept as .bad), staying quiet until the owner writes"
         if L.quiet:
             q0, q1, m = _minutes(L.quiet[0]), _minutes(L.quiet[1]), now.hour * 60 + now.minute
             if (q0 <= m < q1) if q0 < q1 else (m >= q0 or m < q1):

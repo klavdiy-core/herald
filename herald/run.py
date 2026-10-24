@@ -66,10 +66,19 @@ class Herald:
 
     # ---------- state ----------
     def _state(self):
+        fresh = {"session": None, "voice": "off", "offset": 0}
         if os.path.exists(self.state_path):
-            with open(self.state_path, encoding="utf-8") as f:
-                return json.load(f)
-        return {"session": None, "voice": "off", "offset": 0}
+            try:
+                with open(self.state_path, encoding="utf-8") as f:
+                    s = json.load(f)
+                if isinstance(s, dict):
+                    return {**fresh, **s}
+            except (ValueError, OSError):
+                pass
+            # unreadable: keep it for a look and start fresh (offset 0 only re-reads updates Telegram still holds)
+            os.replace(self.state_path, self.state_path + ".bad")
+            self._log("herald.json was unreadable: moved to herald.json.bad, started fresh")
+        return fresh
 
     def _save(self, **kw):
         s = self._state()
@@ -122,6 +131,8 @@ class Herald:
     def handle(self, m):
         if m.chat_id not in self.owners:
             return
+        if m.kind == "text" and not m.forwarded and m.text.strip() == "/stop":
+            return self._command(m.chat_id, "/stop")      # the kill switch needs no state, so nothing stands before it
         self.gate.record_owner_reply()
         heard = None
         if m.kind == "voice":
@@ -268,13 +279,20 @@ class Herald:
                     self._reply(owner, text)
                 self.gate.record_sent()
 
+    def _process(self, msgs, offset):
+        """Each update once: one that crashes its handler is logged and passed, never polled again forever."""
+        for m in msgs:
+            try:
+                self.handle(m)
+            except Exception:
+                self._log(f"update {m.update_id} failed:\n" + traceback.format_exc())
+        self._save(offset=offset)
+
     def loop(self, poll_timeout=50):
         while True:
             try:
                 msgs, offset = self.bot.poll(self._state()["offset"], timeout=poll_timeout)
-                for m in msgs:
-                    self.handle(m)
-                self._save(offset=offset)
+                self._process(msgs, offset)
                 self.tick()
             except telegram.TelegramError as e:
                 self._log(f"telegram: {e}")
@@ -284,11 +302,16 @@ class Herald:
                 time.sleep(5)
 
 
+def engine_config(cfg):
+    """The one place a config becomes an EngineConfig: doctor checks exactly what run will use."""
+    return engine.EngineConfig(**{k: cfg[k] for k in ("model", "max_turns", "max_budget_usd", "timeout_s", "tools")
+                                  if k in cfg}, append_system_prompt_file=cfg.get("persona_file", ""))
+
+
 def build(cfg, token):
     os.makedirs(cfg["control"], exist_ok=True)
     os.makedirs(cfg["workspace"], exist_ok=True)
-    ecfg = engine.EngineConfig(**{k: cfg[k] for k in ("model", "max_turns", "max_budget_usd", "timeout_s", "tools")
-                                  if k in cfg}, append_system_prompt_file=cfg.get("persona_file", ""))
+    ecfg = engine_config(cfg)
     vc = cfg.get("voice") or {}
     synth = None
     if vc.get("model"):

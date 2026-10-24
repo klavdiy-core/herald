@@ -55,7 +55,7 @@ def text(t, uid=1, forwarded=False):
     return Message(uid, OWNER, "text", text=t, forwarded=forwarded)
 
 
-class HeraldTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.control = os.path.join(self.tmp.name, "control")
@@ -82,6 +82,8 @@ class HeraldTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+
+class HeraldTest(Base):
     def test_owner_text_runs_a_turn_in_the_workspace_and_answers(self):
         self.h.handle(text("hi"))
         self.assertEqual(self.engine.calls[0]["workspace"], self.workspace)
@@ -212,7 +214,7 @@ class HeraldTest(unittest.TestCase):
         self.assertTrue(self.h.gate.may_speak()[0])
 
 
-class SpeakFirstTickTest(HeraldTest):
+class SpeakFirstTickTest(Base):
     def test_a_due_job_speaks_and_is_recorded(self):
         h = self.make(jobs=[speak_first.Job("check", "anything new?", every_min=60)])
         h.tick()
@@ -242,6 +244,57 @@ class SpeakFirstTickTest(HeraldTest):
         self.assertTrue(all(chat == OWNER for chat, _ in self.bot.texts))
 
 
+class CorruptStateTest(Base):
+    """Found by an independent tester, 24.10: a broken state file must never take the kill switch down."""
+
+    def corrupt(self, name, text="{garbage"):
+        with open(os.path.join(self.control, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_stop_works_with_a_corrupt_speak_state(self):
+        for bad in ("{garbage", ""):
+            self.corrupt("speak.json", bad)
+            self.h.handle(text("/stop"))
+            self.assertTrue(os.path.exists(os.path.join(self.control, "STOP")), repr(bad))
+            os.remove(os.path.join(self.control, "STOP"))
+
+    def test_stop_does_not_depend_on_the_gate_at_all(self):
+        def broken():
+            raise RuntimeError("any future bug in the gate")
+        self.h.gate.record_owner_reply = broken
+        self.h.handle(text("/stop"))
+        self.assertTrue(os.path.exists(os.path.join(self.control, "STOP")))
+
+    def test_a_corrupt_speak_state_closes_speaking_first_until_the_owner_writes(self):
+        self.corrupt("speak.json")
+        self.assertFalse(self.h.gate.may_speak()[0])
+        self.assertTrue(os.path.exists(os.path.join(self.control, "speak.json.bad")))
+
+    def test_a_corrupt_herald_state_does_not_kill_the_loop(self):
+        self.corrupt("herald.json")
+        self.bot.updates = [text("/stop")]
+        self.h.handle(self.bot.updates[0])
+        self.assertTrue(os.path.exists(os.path.join(self.control, "STOP")))
+        self.assertEqual(self.h._state()["offset"], 0)
+        self.assertTrue(os.path.exists(os.path.join(self.control, "herald.json.bad")))
+
+    def test_one_bad_update_does_not_repeat_forever(self):
+        calls = []
+
+        class Boom(Exception):
+            pass
+
+        def handle(m):
+            calls.append(m.update_id)
+            raise Boom()
+        self.h.handle = handle
+        self.bot.updates = [text("a", uid=1)]
+        msgs, off = self.bot.poll(0)
+        self.h._process(msgs, off)
+        self.assertEqual(self.h._state()["offset"], off)    # moved past the update that crashed
+        self.assertEqual(calls, [1])
+
+
 class ConfigTest(unittest.TestCase):
     def write(self, d, cfg):
         p = os.path.join(d, "config.json")
@@ -251,6 +304,20 @@ class ConfigTest(unittest.TestCase):
 
     def base(self, d):
         return {"owners": [OWNER], "workspace": os.path.join(d, "ws"), "control": os.path.join(d, "control")}
+
+    def test_doctor_without_a_token_checks_the_configured_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = dict(self.base(d), model="claude-haiku-5-5", max_turns=3)
+            seen = {}
+            real = run.doctor.run_all
+            run.doctor.run_all = lambda ecfg, *a, **k: seen.setdefault("ecfg", ecfg) and []
+            try:
+                from herald import __main__ as cli
+                os.environ.pop("HERALD_TELEGRAM_TOKEN", None)
+                cli.main(["doctor", "--config", self.write(d, cfg)])
+            finally:
+                run.doctor.run_all = real
+            self.assertEqual((seen["ecfg"].model, seen["ecfg"].max_turns), ("claude-haiku-5-5", 3))
 
     def test_minimal_config_loads(self):
         with tempfile.TemporaryDirectory() as d:

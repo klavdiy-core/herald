@@ -40,10 +40,7 @@ def main(argv=None):
     token = os.environ.get("HERALD_TELEGRAM_TOKEN", "")
     cfg = run.load_config(a.config)
     if a.cmd == "doctor":
-        _, ecfg = run.build(cfg, token) if token else (None, None)
-        if ecfg is None:
-            from .engine import EngineConfig
-            ecfg = EngineConfig()
+        ecfg = run.engine_config(cfg)            # the configured model and tools, token or not
         checks = doctor.run_all(ecfg, token, cfg["owners"], (cfg.get("voice") or {}).get("model"))
         print(doctor.render(checks))
         return 0 if doctor.may_start(checks) else 1
