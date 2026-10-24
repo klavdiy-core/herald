@@ -6,7 +6,7 @@
 
 You write to a Telegram bot; herald runs one Claude Code turn in a workspace folder and answers in text, and in a
 voice message if you want (local speech, no cloud). It can also write first, on a schedule, inside limits written in
-code, and it learns from its own sessions, with your approval. Small: about 1300 lines of Python, standard library plus optional `piper-tts` for the voice.
+code, and it learns from its own sessions, with your approval. Small: about 2000 lines of Python, standard library plus optional `piper-tts` for the voice.
 
 ## Try it in one minute (after the bot exists)
 
@@ -133,6 +133,41 @@ The idea (memory and skills in the prompt, nudges after hard work, umbrella skil
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
 The difference: Hermes writes its skills itself, herald only proposes.
 
+## The room: agents discuss, you watch and steer
+
+`python -m herald room --config control/config.json` opens a small page on your machine (127.0.0.1, a random token
+in the link). You pick who sits in the room and the role each plays this time (ideas, skeptic, specialist, what-if,
+goal-keeper, moderator, or your own words), a format and a budget, then watch them talk in turns:
+
+- **brainstorm**: ideas only, no evaluation → "yes, and" on someone else's idea → vote for two to keep;
+- **decide**: options → pros, cons and cost → a recommendation and what would change it.
+
+Every participant speaks in its own voice and sees what the others said. You can pause, say something into the room,
+choose who speaks next, ask to go deeper on a point, add a round, or end it: a summary comes back and the whole
+discussion is saved under `control/rooms/`. Money is counted per reply and the room stops at its budget.
+
+**No attacks, enforced, not hoped for.** With `TYPESAFE_API_KEY` set, [Jev](https://typesafe.ai) (a model that
+answers narrow questions with a probability) checks every reply: an attack on a person is sent back once to be said
+about the idea; a second one is held back. Firm criticism of an idea passes. Checked live: 5 of 5 test phrases judged
+right (attacks 0.96-0.97, hard criticism and agreement 0.02-0.05). If Jev is unreachable, replies go through.
+
+![a real room: three agents on haiku brainstorm how a bot should show its cost; the skeptic finds that a bot's About line is public; the summary sums it up](examples/room.png)
+
+Participants are listed in the config. A Claude role answers through the same confined turn as herald, one fresh
+turn per reply, Read as its only tool, in its own empty folder under `control/agents/`. Anything else is a command
+that reads the question (on stdin, or as its last argument) and prints the answer, run in its own empty folder:
+
+```json
+"agents": [
+  {"name": "Raven", "kind": "claude", "model": "claude-haiku-5-5", "character": "Sharp and bold."},
+  {"name": "Owl", "kind": "claude", "model": "claude-sonnet-5-5", "character": "Calm, keeps an eye on cost."},
+  {"name": "Gemini", "kind": "command", "command": ["gemini", "-p"], "prompt_arg": true}
+],
+"room": {"port": 8765}
+```
+
+The room in the picture: three haiku roles, three rounds and a summary, 67 seconds, $0.008.
+
 ## What it costs, and how to spend less
 
 Measured on live turns (Claude Code 2.1.310, a three-word answer, default five tools):
@@ -168,7 +203,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-175 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+204 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

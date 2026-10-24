@@ -11,10 +11,11 @@ import secrets
 import time
 import traceback
 
-from . import doctor, engine, hearing, learning, notebook, speak_first, telegram, voice
+from . import agents, doctor, engine, hearing, learning, notebook, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
-        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day"}
+        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
+ROOM_KEYS = {"port", "budget_usd", "pace_s"}
 MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
 VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
 SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
@@ -42,7 +43,7 @@ def load_config(path):
         if k in cfg and cfg[k] is None:
             del cfg[k]
     unknown =(set(cfg) - KEYS | set(cfg.get("voice", {})) - VOICE_KEYS | set(cfg.get("speak_first", {})) - SPEAK_KEYS
-               | set(cfg.get("hearing", {})) - HEAR_KEYS)
+               | set(cfg.get("hearing", {})) - HEAR_KEYS | set(cfg.get("room", {})) - ROOM_KEYS)
     if unknown:
         raise ValueError(f"unknown config keys (refusing to guess): {sorted(unknown)}")
     if not cfg.get("owners"):
@@ -397,6 +398,17 @@ class Herald:
             except Exception:                       # never die silently; the log keeps the cause
                 self._log("crash in loop:\n" + traceback.format_exc())
                 time.sleep(5)
+
+
+def room_agents(cfg, claude_cmd=None):
+    """{name: agent} from the config's "agents" list; each lives in control/agents/<name>/, out of the workspace."""
+    out = {}
+    for entry in cfg.get("agents") or []:
+        a = agents.from_config(entry, cfg["control"], claude_cmd)
+        if a.name in out:
+            raise ValueError(f"two agents are named {a.name}")
+        out[a.name] = a
+    return out
 
 
 def engine_config(cfg):

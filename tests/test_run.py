@@ -368,6 +368,30 @@ class RescoreFindingsTest(Base):
 
 
 class ConfigTest(unittest.TestCase):
+    def test_room_agents_come_from_the_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": os.path.join(d, "c"),
+                           "agents": [{"name": "Raven", "kind": "claude", "character": "Bold."},
+                                      {"name": "Gemini", "kind": "command", "command": ["agy", "-p"],
+                                       "prompt_arg": True}],
+                           "room": {"port": 8770, "budget_usd": 0.5}}, f)
+            cfg = run.load_config(p)
+            ag = run.room_agents(cfg)
+            self.assertEqual(sorted(ag), ["Gemini", "Raven"])
+            self.assertTrue(ag["Raven"].ws.startswith(os.path.realpath(cfg["control"])) or
+                            ag["Raven"].ws.startswith(cfg["control"]))      # agents live in control/, not the workspace
+
+    def test_two_agents_with_one_name_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": os.path.join(d, "c"),
+                           "agents": [{"name": "Raven", "kind": "claude"}, {"name": "Raven", "kind": "claude"}]}, f)
+            with self.assertRaises(ValueError):
+                run.room_agents(run.load_config(p))
+
     def test_a_null_block_reads_as_absent(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "c.json")

@@ -1,6 +1,7 @@
 """python -m herald doctor|run|say --config control/config.json
    python -m herald learn <transcript.jsonl> [--private] [--ignore REGEX] [--out proposals.md]
-   python -m herald team <projects folder> --out <shared folder> [--since-hours N] [--ignore REGEX]"""
+   python -m herald team <projects folder> --out <shared folder> [--since-hours N] [--ignore REGEX]
+   python -m herald room --config control/config.json   (the agents' room in a browser)"""
 import argparse
 import os
 import sys
@@ -10,7 +11,7 @@ from . import doctor, learning, run, team, voice
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="herald")
-    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn", "team"])
+    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn", "team", "room"])
     ap.add_argument("transcript", nargs="?", default="")
     ap.add_argument("--config", default="control/config.json")
     ap.add_argument("--text", default="")
@@ -39,6 +40,21 @@ def main(argv=None):
         return 0
     token = os.environ.get("HERALD_TELEGRAM_TOKEN", "")
     cfg = run.load_config(a.config)
+    if a.cmd == "room":                          # the agents' room in a browser, on this machine only
+        from . import jev, room_web
+        ag = run.room_agents(cfg)
+        if not ag:
+            ap.error('add an "agents" list to the config first (see README, "The room")')
+        rc = cfg.get("room") or {}
+        judge = jev.from_env()
+        srv = room_web.serve(ag, record_dir=os.path.join(cfg["control"], "rooms"), judge=judge,
+                             port=rc.get("port", 8765), pace_s=rc.get("pace_s", 0.3), background=False)
+        print(f"room: {srv.url}\nmoderator: {'Jev' if judge else 'off (set TYPESAFE_API_KEY)'} · Ctrl+C to stop")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        return 0
     if a.cmd == "doctor":
         ecfg = run.engine_config(cfg)            # the configured model and tools, token or not
         checks = doctor.run_all(ecfg, token, cfg["owners"], (cfg.get("voice") or {}).get("model"))
