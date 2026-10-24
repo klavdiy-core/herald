@@ -34,9 +34,13 @@ class ClaudeRole:
 
 
 class Command:
-    def __init__(self, name, command, timeout_s=180, prompt_arg=False, cwd=None):
+    def __init__(self, name, command, timeout_s=180, prompt_arg=False, cwd=None, pass_env=()):
         self.name, self.command, self.timeout_s = name, list(command), timeout_s
         self.prompt_arg, self.cwd = prompt_arg, cwd    # some CLIs take the question as an argument, not on stdin
+        # an outside program gets the same allow-listed environment as a claude turn: no bot token, no Jev key;
+        # a CLI that needs its own key names it in "pass_env"
+        keep = engine.ENV_ALLOW | {k.upper() for k in pass_env}
+        self.env = {k: v for k, v in os.environ.items() if k.upper() in keep}
 
     def speak(self, prompt):
         argv = self.command + ([prompt] if self.prompt_arg else [])
@@ -44,7 +48,8 @@ class Command:
             os.makedirs(self.cwd, exist_ok=True)
         try:
             p = subprocess.run(argv, input=None if self.prompt_arg else prompt, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=self.timeout_s, cwd=self.cwd)
+                               encoding="utf-8", errors="replace", timeout=self.timeout_s, cwd=self.cwd,
+                               env=self.env)
         except (OSError, subprocess.SubprocessError) as e:
             return f"({self.name} could not answer: {type(e).__name__})", 0.0
         out = p.stdout.strip()
@@ -64,5 +69,6 @@ def from_config(entry, workdir, claude_cmd=None):
         if not entry.get("command"):
             raise ValueError(f"agent {name}: a command agent needs \"command\": [program, args...]")
         cwd = os.path.join(workdir, "agents", re.sub(r"\W+", "_", name), "cwd")   # an empty folder of its own
-        return Command(name, entry["command"], entry.get("timeout_s", 180), bool(entry.get("prompt_arg")), cwd)
+        return Command(name, entry["command"], entry.get("timeout_s", 180), bool(entry.get("prompt_arg")), cwd,
+                       entry.get("pass_env") or ())
     raise ValueError(f"agent {name}: kind must be \"claude\" or \"command\"")

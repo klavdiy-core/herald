@@ -49,6 +49,12 @@ def load_config(path):
         raise ValueError(f"unknown config keys (refusing to guess): {sorted(unknown)}")
     if not cfg.get("owners"):
         raise ValueError("owners must not be empty")
+    # a cap written as "0.5" once passed and made the bot silently deaf: numbers must be numbers
+    numbers = [(k, cfg.get(k)) for k in ("max_turns", "max_budget_usd", "timeout_s", "max_usd_per_day")]
+    numbers += [(f"room.{k}", (cfg.get("room") or {}).get(k)) for k in ("port", "budget_usd", "pace_s")]
+    for k, v in numbers:
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+            raise ValueError(f"{k} must be a number, got {v!r}")
     for k in ("workspace", "control"):
         if not cfg.get(k):
             raise ValueError(f"{k} is required")
@@ -171,8 +177,23 @@ class Herald:
                         usd, n = usd + float(row.get("usd") or 0), n + 1
         return usd, n
 
-    def _over_budget(self):
-        return self.max_usd_per_day is not None and self._today()[0] >= self.max_usd_per_day
+    def _over_budget(self, extra=0.0):
+        """extra: money spent but not in the ledger yet (a room that is still talking)."""
+        return self.max_usd_per_day is not None and self._today()[0] + extra >= self.max_usd_per_day
+
+    def _room_halt(self, r):
+        if os.path.exists(self.stop_path):
+            return "stop"
+        if self._over_budget(r.spent - getattr(r, "logged", 0.0)):
+            return "budget"
+        return None
+
+    def _room_log(self, r):
+        new = r.spent - getattr(r, "logged", 0.0)
+        r.logged = r.spent
+        with open(self.costs_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                "usd": round(new, 6), "kind": "room", "ok": True}) + "\n")
 
     def _system(self):
         """persona + what the owner approved, rebuilt before every turn, kept in control/; the owner's /model."""
@@ -181,6 +202,9 @@ class Herald:
         cfg = self.engine_cfg
         if self._state().get("model"):
             cfg = dataclasses.replace(cfg, model=self._state()["model"])
+        if self.max_usd_per_day is not None:            # a turn never gets more than today has left
+            left = self.max_usd_per_day - self._today()[0]
+            cfg = dataclasses.replace(cfg, max_budget_usd=max(0.01, min(cfg.max_budget_usd, round(left, 4))))
         persona = ""
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:
@@ -358,7 +382,8 @@ class Herald:
         seats = [room.Seat(a, self.room_roles.get(n, "ideas")) for n, a in self.room_agents.items()]
         r = room.Room(topic, seats, fmt="brainstorm", budget_usd=self.room_budget, judge=self.room_judge,
                       record_dir=os.path.join(self.control, "rooms"))
-        who = ", ".join(f"{s.agent.name} ({s.role})" for s in seats)
+        r.should_stop = lambda: self._room_halt(r)
+        who =", ".join(f"{s.agent.name} ({s.role})" for s in seats)
         self.bot.send_text(chat_id, f"Room on «{topic}»: {who}. Three rounds, then the summary comes here.")
 
         def talk():
@@ -367,6 +392,12 @@ class Herald:
                 for _ in range(len(room.PHASES["brainstorm"])):
                     if not r.round():
                         break
+                if r.halted:                            # /stop or the daily cap, checked before every reply
+                    self._room_log(r)
+                    why = ("stopped by /stop" if r.halted == "stop"
+                           else "stopped: today's daily budget is used up")
+                    return self.bot.send_text(chat_id, f"Room on «{topic}» {why} after {len(r.messages)} replies "
+                                                       f"(${r.spent:.3f}); no summary was made.")
                 self._room_summary(chat_id, r)
             except Exception:  # noqa: BLE001 — a failed room is told, never a dead daemon
                 self._log("room crashed:\n" + traceback.format_exc())
@@ -381,11 +412,7 @@ class Herald:
     def _room_summary(self, chat_id, r):
         """Close the room, count its new spend, send the summary with Accept / One more round / Postpone."""
         summary = r.end()
-        new = r.spent - getattr(r, "logged", 0.0)
-        r.logged = r.spent
-        with open(self.costs_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
-                                "usd": round(new, 6), "kind": "room", "ok": True}) + "\n")
+        self._room_log(r)
         key = secrets.token_hex(4)
         self.live_rooms[key] = r
         did = self.decisions.offer(f"room: {r.topic}", ["Accept", "One more round"], kind="room",

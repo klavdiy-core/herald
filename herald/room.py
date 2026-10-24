@@ -42,7 +42,8 @@ class Seat:
 
 
 class Room:
-    def __init__(self, topic, seats, fmt="brainstorm", budget_usd=None, judge=None, record_dir=None, history=12):
+    def __init__(self, topic, seats, fmt="brainstorm", budget_usd=None, judge=None, record_dir=None, history=12,
+                 should_stop=None):
         if fmt not in PHASES:
             raise ValueError(f"format must be one of {sorted(PHASES)}")
         if not seats:
@@ -53,6 +54,7 @@ class Room:
         self.spent, self.turn, self.rounds = 0.0, 0, 0
         self.paused, self.forced, self.focus, self.closed, self.over = False, None, None, False, False
         self.record_path = None
+        self.should_stop, self.halted = should_stop, None   # should_stop() -> a reason ("stop", "budget") or None
 
     # ---------- events ----------
     def listen(self, fn):
@@ -112,14 +114,20 @@ class Room:
 
     def step(self):
         """One reply. False when paused, closed or out of budget."""
-        if self.paused or self.closed:
+        if self.paused or self.closed or self.halted:
+            return False
+        why = self.should_stop() if self.should_stop else None   # the owner's STOP and money hold before every reply
+        if why:
+            self.halted = why
+            self._emit("halted", reason=why, spent=round(self.spent, 4))
             return False
         if self.budget is not None and self.spent >= self.budget:
             if not self.over:
                 self.over = True
                 self._emit("budget", spent=round(self.spent, 4), budget=self.budget)
             return False
-        if self.forced:
+        forced = bool(self.forced)
+        if forced:                                       # an extra turn the owner asked for: not part of a round
             idx = next(i for i, s in enumerate(self.seats) if s.agent.name == self.forced)
             self.forced = None
         else:
@@ -137,7 +145,7 @@ class Room:
         m = {"speaker": seat.agent.name, "role": seat.role, "text": text, "round": self.rounds, "held": held}
         self.messages.append(m)
         self._emit("message", spent=round(self.spent, 4), **m)
-        if self.turn % len(self.seats) == 0 and idx == len(self.seats) - 1:
+        if not forced and self.turn % len(self.seats) == 0:
             self.rounds += 1
             done = self.rounds >= len(PHASES[self.fmt])
             self._emit("round", n=self.rounds, next="all rounds done" if done else self.phase())

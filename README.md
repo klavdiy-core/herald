@@ -182,6 +182,15 @@ that reads the question (on stdin, or as its last argument) and prints the answe
 "room": {"port": 8765}
 ```
 
+**What is confined and what is not.** A Claude role is confined like every herald turn (Claude Code's
+`--restricted`, its own empty folder, Read only). A `command` agent is an ordinary program you chose: herald only
+gives it an empty folder of its own and the same allow-listed environment as a Claude turn (no bot token, no
+`TYPESAFE_API_KEY`); a CLI that needs its own key names it in `"pass_env": ["ITS_KEY"]`. Treat a command agent as
+code you run yourself.
+
+`/stop` and the daily cap are checked before every reply in a room, not only when it starts; a stopped room says so
+and makes no summary. Its spend goes into the ledger even when it stops early.
+
 The room in the picture: three haiku roles, three rounds and a summary, 67 seconds, $0.008. A room of three Claude
 roles and Gemini (through its own CLI) deciding herald's next feature took 121 seconds and $0.013.
 
@@ -223,7 +232,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-221 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+231 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

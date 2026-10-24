@@ -8,6 +8,12 @@ import os
 import secrets
 
 
+def _valid(d):
+    return (isinstance(d, dict) and d.get("status") in ("open", "postponed", "done", "expired")
+            and isinstance(d.get("options"), list) and isinstance(d.get("text"), str)
+            and isinstance(d.get("expires"), (int, float)) and isinstance(d.get("meta", {}), dict))
+
+
 class Decisions:
     def __init__(self, path, now, ttl_s=24 * 3600):
         self.path, self.now, self.ttl_s = path, now, ttl_s
@@ -18,8 +24,9 @@ class Decisions:
         try:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict) and all(isinstance(v, dict) for v in data.values()):
-                return data
+            if isinstance(data, dict):
+                # a damaged entry is dropped, not trusted: a record without "status" once crashed every tick
+                return {k: v for k, v in data.items() if _valid(v)}
         except (ValueError, OSError):
             pass
         os.replace(self.path, self.path + ".bad")

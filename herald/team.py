@@ -6,10 +6,20 @@ a person reads the folder and decides.
 """
 import json
 import os
+import re
 import time
 from collections import OrderedDict
 
 from . import learning
+
+
+def safe(role):
+    """A role name as a file name that stays inside --out ("../escape" once wrote outside it)."""
+    s = re.sub(r"[^\w\-]+", "_", role).strip("._")
+    return ("role_" + s if s.upper().split(".")[0] in RESERVED or s.upper() == "INDEX" else s) or "role"
+
+
+RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 def title(path):
@@ -19,7 +29,8 @@ def title(path):
         for line in f:
             if '"custom-title"' in line:
                 try:
-                    name = json.loads(line).get("customTitle") or name
+                    t = json.loads(line).get("customTitle")
+                    name = t.strip() if isinstance(t, str) and t.strip() else name
                 except ValueError:
                     pass
     return name
@@ -73,12 +84,12 @@ def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None):
             fixes.setdefault(show(r["signature"]), (learning._scrub(learning._short(r["fix_input"], private), typed),
                                                     role))
         props = learning.propose(rep, private=private)
-        with open(os.path.join(out_dir, f"{role}.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(out_dir, f"{safe(role)}.md"), "w", encoding="utf-8") as f:
             f.write(learning.render_md(props, source=f"{role}, {len(by_role[role])} session(s)"))
         res["roles"][role] = {"sessions": len(by_role[role]), "proposals": len(props)}
     shared = sorted(((s, r) for s, r in seen.items() if len(r) >= 2), key=lambda x: -sum(x[1].values()))
     lines = ["# Team learning", "", "| role | sessions | proposals |", "|---|---|---|"]
-    lines += [f"| [{k}]({k}.md) | {v['sessions']} | {v['proposals']} |" for k, v in res["roles"].items()]
+    lines += [f"| [{k}]({safe(k)}.md) | {v['sessions']} | {v['proposals']} |" for k, v in res["roles"].items()]
     lines += ["", "## Shared: errors more than one role hit (with a fix one of them found)", ""]
     lines += [f"- `{s}` — " + ", ".join(f"{k} {n}x" for k, n in r.items())
               + (f" — fixed in {fixes[s][1]} by `{fixes[s][0]}`" if s in fixes else "") for s, r in shared] or ["(none)"]

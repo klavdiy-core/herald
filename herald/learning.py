@@ -48,7 +48,7 @@ def _text(content):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text")
+        return "\n".join(str(b.get("text") or "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     return ""
 
 
@@ -79,7 +79,8 @@ def signature(text):
         line = next((l for l in lines if ERROR_LINE.search(l)), lines[0])
     line = re.sub(r"[A-Za-z]:\\[^\s'\"]+|/(?:[\w.-]+/)+[\w.-]+", "<path>", line)
     line = re.sub(r"\b[0-9a-f]{8,}\b", "<id>", line)
-    line = re.sub(r"(?<![A-Za-z_])\d+(?:\.\d+)*", "N", line)      # line 3 -> N, but jinja2 stays jinja2
+    # line 3 -> N; digits glued to letters stay (jinja2, a typed ALPHA47 that private mode must still recognise)
+    line = re.sub(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)*(?![A-Za-z_])", "N", line)
     return re.sub(r"\s+", " ", line)[:160]
 
 
@@ -109,8 +110,8 @@ def _events(path):
             # injected skill / command text and the summary written after a compaction are not the human
             if not isinstance(rec, dict) or rec.get("isMeta") or rec.get("isCompactSummary"):
                 continue
-            msg = rec.get("message") or {}
-            content, ts = msg.get("content"), rec.get("timestamp", "")
+            msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}   # malformed records are skipped
+            content, ts = msg.get("content"), str(rec.get("timestamp", ""))
             att = rec.get("attachment") if rec.get("type") == "attachment" else None
             if (isinstance(att, dict) and att.get("type") == "queued_command" and str(att.get("prompt", "")).strip()
                     and not str(att["prompt"]).lstrip().startswith("<")):     # <task-notification> etc. are system
@@ -122,8 +123,9 @@ def _events(path):
                     if not isinstance(b, dict):
                         continue
                     if b.get("type") == "tool_use":
-                        calls[b.get("id")] = (b.get("name"), b.get("input") or {})
-                    elif b.get("type") == "text" and b.get("text", "").strip():
+                        inp = b.get("input")
+                        calls[b.get("id")] = (str(b.get("name")), inp if isinstance(inp, dict) else {"value": str(inp)})
+                    elif b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
                         out.append({"kind": "say", "text": b["text"], "ts": ts})
             elif rec.get("type") == "user":
                 if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
