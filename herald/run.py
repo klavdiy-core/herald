@@ -8,10 +8,11 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import traceback
 
-from . import agents, doctor, engine, hearing, learning, notebook, speak_first, telegram, voice
+from . import agents, doctor, engine, hearing, jev, learning, notebook, room, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
@@ -22,7 +23,7 @@ SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
 HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
 VOICE_IN = "[voice message, transcribed]\n{}"
 HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /model NAME|default\n"
-        "/learn · /approve N · /drop N · /memory · /forget N")
+        "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC")
 NUDGE_STEPS = 8            # a turn this long probably taught something (Hermes nudges after 5+ tool calls)
 NUDGE_EVERY = 5
 NUDGE = "\n\n(That was a long one. /learn to keep what worked.)"
@@ -85,7 +86,8 @@ def _command_word(t):
 class Herald:
     def __init__(self, bot, run_turn, engine_cfg, gate, jobs, control, workspace, owners, synth=None,
                  hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
-                 max_usd_per_day=None):
+                 max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
+                 room_sync=False):
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -96,6 +98,8 @@ class Herald:
         self.persona_file = engine_cfg.append_system_prompt_file if engine_cfg else ""
         self.max_usd_per_day = max_usd_per_day
         self.costs_path = os.path.join(control, "costs.jsonl")
+        self.room_agents, self.room_judge, self.room_budget = room_agents or {}, room_judge, room_budget
+        self.room_roles, self.room_sync, self.room_busy = room_roles or {}, room_sync, False
 
     # ---------- state ----------
     def _state(self):
@@ -298,10 +302,50 @@ class Herald:
         self._log(f"learned {p['kind']} {what}")
         self.bot.send_text(chat_id, f"Approved {n}: {what}. It goes into every turn from now on.")
 
+    # ---------- the room, from the chat ----------
+    def _room(self, chat_id, topic):
+        if not topic:
+            return self.bot.send_text(chat_id, "/room <topic>: the agents from the config discuss it; the summary "
+                                               "comes here.")
+        if not self.room_agents:
+            return self.bot.send_text(chat_id, 'No agents yet: add an "agents" list to the config (README, "The room").')
+        if self._over_budget():
+            return self.bot.send_text(chat_id, "Today's daily budget is used up; the room can start tomorrow.")
+        if self.room_busy:
+            return self.bot.send_text(chat_id, "A room is already talking; its summary will come here.")
+        seats = [room.Seat(a, self.room_roles.get(n, "ideas")) for n, a in self.room_agents.items()]
+        r = room.Room(topic, seats, fmt="brainstorm", budget_usd=self.room_budget, judge=self.room_judge,
+                      record_dir=os.path.join(self.control, "rooms"))
+        who = ", ".join(f"{s.agent.name} ({s.role})" for s in seats)
+        self.bot.send_text(chat_id, f"Room on «{topic}»: {who}. Three rounds, then the summary comes here.")
+
+        def talk():
+            self.room_busy = True
+            try:
+                for _ in range(len(room.PHASES["brainstorm"])):
+                    if not r.round():
+                        break
+                summary = r.end()
+                with open(self.costs_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                        "usd": round(r.spent, 6), "kind": "room", "ok": True}) + "\n")
+                self._reply(chat_id, f"Room on «{topic}», summary (${r.spent:.3f}):\n\n{summary}"[:4000])
+            except Exception:  # noqa: BLE001 — a failed room is told, never a dead daemon
+                self._log("room crashed:\n" + traceback.format_exc())
+                self.bot.send_text(chat_id, "The room failed; the reason is in control/audit.log.")
+            finally:
+                self.room_busy = False
+        if self.room_sync:
+            talk()
+        else:
+            threading.Thread(target=talk, daemon=True).start()
+
     def _command(self, chat_id, t):
         _, _, arg = t.partition(" ")
         cmd = _command_word(t)
-        if cmd == "/learn":
+        if cmd == "/room":
+            self._room(chat_id, arg.strip())
+        elif cmd == "/learn":
             self._learn(chat_id)
         elif cmd == "/approve":
             self._approve(chat_id, arg)
@@ -436,10 +480,14 @@ def build(cfg, token):
         hcfg = hearing.HearConfig(**hc)
         hear = lambda path: hearing.transcribe(path, hcfg)                        # noqa: E731
         download = lambda file_id, out: bot.download(file_id, out, int(hcfg.max_mb * 1024 * 1024))  # noqa: E731
+    ra = room_agents(cfg)
     h = Herald(bot, engine.run_turn, ecfg, gate, jobs, cfg["control"], cfg["workspace"], set(cfg["owners"]), synth,
                hear=hear, download=download,
                hear_max_bytes=int((hc or {}).get("max_mb", 10) * 1024 * 1024),
-               max_usd_per_day=cfg.get("max_usd_per_day"))
+               max_usd_per_day=cfg.get("max_usd_per_day"),
+               room_agents=ra, room_judge=jev.from_env() if ra else None,
+               room_budget=(cfg.get("room") or {}).get("budget_usd"),
+               room_roles={e["name"]: e.get("role", "ideas") for e in cfg.get("agents") or []})
     return h, ecfg
 
 

@@ -55,7 +55,7 @@ model could not write at all, and with it alone it could write `CLAUDE.md`.
 - Forwarded messages are handed to the model as data, not instructions, inside a fence with a fresh random tag per
   message (forwarded text cannot close it early); a forwarded `/stop` is not a command. `/stop@yourbot` and `/STOP` work.
 - Commands: `/stop` (no turns, no speaking first, until `/resume`) · `/resume` · `/new` (fresh conversation) ·
-  `/voice off|voice|both` · `/status` · `/model NAME|default`.
+  `/voice off|voice|both` · `/status` · `/model NAME|default` · `/room TOPIC`.
 - The token never appears in errors or logs.
 - `/stop` is handled before anything else and needs no state: a broken state file cannot block it. A state file that
   cannot be read is kept as `*.bad`; speaking first then stays quiet until you write. An update that crashes its
@@ -166,7 +166,11 @@ that reads the question (on stdin, or as its last argument) and prints the answe
 "room": {"port": 8765}
 ```
 
-The room in the picture: three haiku roles, three rounds and a summary, 67 seconds, $0.008.
+The room in the picture: three haiku roles, three rounds and a summary, 67 seconds, $0.008. A room of three Claude
+roles and Gemini (through its own CLI) deciding herald's next feature took 121 seconds and $0.013.
+
+From Telegram: `/room <topic>` seats every agent from the config (with its `"role"`), runs the three brainstorm
+rounds and sends the summary to the chat. Its money goes into the same daily ledger and cap.
 
 ## What it costs, and how to spend less
 
@@ -203,7 +207,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-204 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+209 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
