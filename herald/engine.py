@@ -64,6 +64,7 @@ class TurnResult:
     denials: list = field(default_factory=list)
     error: str = ""
     num_turns: int = 0
+    context_tokens: int = 0     # what the turn read: input + cache written + cache read
 
 
 def build_argv(cfg, session_id=None):
@@ -112,7 +113,9 @@ def run_turn(prompt, workspace, cfg, session_id=None):
     denials = [d.get("tool_name", "?") for d in data.get("permission_denials") or []]
     res = TurnResult(not data.get("is_error") and data.get("subtype") == "success",
                      data.get("result") or "", data.get("session_id") or "", float(data.get("total_cost_usd") or 0),
-                     denials, num_turns=int(data.get("num_turns") or 0))
+                     denials, num_turns=int(data.get("num_turns") or 0),
+                     context_tokens=sum(int((data.get("usage") or {}).get(k) or 0) for k in
+                                        ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")))
     if not res.ok:
         res.error = f"claude turn failed: {data.get('subtype')}"
     return res

@@ -21,7 +21,8 @@ if mode == "garbage":
     print("this is not json")
     sys.exit(0)
 out = {"type": "result", "subtype": "success", "is_error": False, "result": "echo: " + prompt.strip(),
-       "session_id": session, "total_cost_usd": 0.01, "num_turns": 1, "permission_denials": []}
+       "session_id": session, "total_cost_usd": 0.01, "num_turns": 1, "permission_denials": [],
+       "usage": {"input_tokens": 2, "cache_creation_input_tokens": 600, "cache_read_input_tokens": 5400, "output_tokens": 9}}
 if mode == "error":
     out.update(subtype="error_max_turns", is_error=True, result="")
 if mode == "denied":

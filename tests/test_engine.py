@@ -62,6 +62,10 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(args[args.index("--resume") + 1], "sess-new")
         self.assertEqual(r2.session_id, "sess-new")
 
+    def test_context_tokens_count_input_and_both_cache_kinds(self):
+        r = engine.run_turn("hi", self.ws, self.cfg)
+        self.assertEqual(r.context_tokens, 2 + 600 + 5400)
+
     def test_cwd_is_the_workspace(self):
         engine.run_turn("hi", self.ws, self.cfg)
         self.assertEqual(os.path.realpath(self.called()["cwd"]), os.path.realpath(self.ws))

@@ -13,12 +13,13 @@ import traceback
 from . import doctor, engine, hearing, learning, notebook, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
-        "persona_file", "voice", "speak_first", "jobs", "hearing"}
+        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day"}
+MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
 VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
 SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
 HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
 VOICE_IN = "[voice message, transcribed]\n{}"
-HELP = ("/stop · /resume · /new · /voice off|voice|both · /status\n"
+HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /model NAME|default\n"
         "/learn · /approve N · /drop N · /memory · /forget N")
 NUDGE_STEPS = 8            # a turn this long probably taught something (Hermes nudges after 5+ tool calls)
 NUDGE_EVERY = 5
@@ -54,7 +55,8 @@ def load_config(path):
 
 class Herald:
     def __init__(self, bot, run_turn, engine_cfg, gate, jobs, control, workspace, owners, synth=None,
-                 hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None):
+                 hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
+                 max_usd_per_day=None):
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -63,6 +65,8 @@ class Herald:
         self.nb = notebook.Notebook(os.path.join(control, "learned"))
         self.roots = transcript_roots if transcript_roots is not None else notebook.default_roots()
         self.persona_file = engine_cfg.append_system_prompt_file if engine_cfg else ""
+        self.max_usd_per_day = max_usd_per_day
+        self.costs_path = os.path.join(control, "costs.jsonl")
 
     # ---------- state ----------
     def _state(self):
@@ -101,24 +105,48 @@ class Herald:
         except (voice.VoiceError, OSError, telegram.TelegramError) as e:
             self._log(f"voice skipped: {e}")
 
+    # ---------- money ----------
+    def _today(self):
+        """(dollars, turns) spent today, from the ledger."""
+        day, usd, n = time.strftime("%Y-%m-%d"), 0.0, 0
+        if os.path.exists(self.costs_path):
+            with open(self.costs_path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("day") == day:
+                        usd, n = usd + float(row.get("usd") or 0), n + 1
+        return usd, n
+
+    def _over_budget(self):
+        return self.max_usd_per_day is not None and self._today()[0] >= self.max_usd_per_day
+
     def _system(self):
-        """persona + what the owner approved, rebuilt before every turn, kept in control/."""
+        """persona + what the owner approved, rebuilt before every turn, kept in control/; the owner's /model."""
         if self.engine_cfg is None:
             return None
+        cfg = self.engine_cfg
+        if self._state().get("model"):
+            cfg = dataclasses.replace(cfg, model=self._state()["model"])
         persona = ""
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:
                 persona = f.read()
         text = self.nb.compose(persona)
         if not text:
-            return self.engine_cfg
+            return cfg
         path = os.path.join(self.control, "system.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
-        return dataclasses.replace(self.engine_cfg, append_system_prompt_file=path)
+        return dataclasses.replace(cfg, append_system_prompt_file=path)
 
     def _turn(self, prompt):
         r = self.run_turn(prompt, self.workspace, self._system(), session_id=self._state()["session"])
+        with open(self.costs_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": r.cost_usd,
+                                "context_tokens": r.context_tokens, "ok": r.ok}) + "\n")
         if r.ok and r.session_id:
             self._save(session=r.session_id)
         return r
@@ -144,6 +172,11 @@ class Herald:
             return self._command(m.chat_id, t)
         if os.path.exists(self.stop_path):
             self.bot.send_text(m.chat_id, "Stopped. /resume to continue.")
+            return
+        if self._over_budget():
+            usd, _ = self._today()
+            self.bot.send_text(m.chat_id, f"Today's daily budget is used up (${usd:.2f} of ${self.max_usd_per_day:.2f}). "
+                                          "Turns start again tomorrow, or raise max_usd_per_day.")
             return
         self.bot.send_action(m.chat_id)
         prompt = FORWARDED.format(t) if m.forwarded else (VOICE_IN.format(t) if heard is not None else t)
@@ -260,15 +293,29 @@ class Herald:
             self.bot.send_text(chat_id, f"Voice: {arg.strip()}.")
         elif cmd == "/status":
             s, (ok, why) = self._state(), self.gate.may_speak()
+            usd, n = self._today()
+            cap = f" of ${self.max_usd_per_day:.2f}" if self.max_usd_per_day is not None else ""
+            model = s.get("model") or (self.engine_cfg.model if self.engine_cfg else "?")
             self.bot.send_text(chat_id, f"stopped: {os.path.exists(self.stop_path)} · voice: {s['voice']} · "
-                                        f"session: {'yes' if s['session'] else 'new'} · speak first: {why}")
+                                        f"session: {'yes' if s['session'] else 'new'} · speak first: {why} · "
+                                        f"model: {model} · today ${usd:.2f}{cap} in {n} turns")
+        elif cmd == "/model":
+            name = arg.strip()
+            if name == "default":
+                self._save(model=None)
+                self.bot.send_text(chat_id, "Model: back to the configured one.")
+            elif MODEL_NAME.match(name):
+                self._save(model=name)
+                self.bot.send_text(chat_id, f"Model: {name} from the next turn.")
+            else:
+                self.bot.send_text(chat_id, "/model claude-haiku-5-5 | claude-sonnet-5-5 | claude-opus-5-5 | default")
         else:
             self.bot.send_text(chat_id, HELP)
 
     # ---------- speaking first ----------
     def tick(self):
         ok, why = self.gate.may_speak()
-        if not ok:
+        if not ok or self._over_budget():
             return                                  # jobs are not spent while the gate is closed
         for job in self.gate.take_due(self.jobs)[:1]:
             r = self._turn(PROACTIVE.format(job.prompt))
@@ -329,7 +376,8 @@ def build(cfg, token):
         download = lambda file_id, out: bot.download(file_id, out, int(hcfg.max_mb * 1024 * 1024))  # noqa: E731
     h = Herald(bot, engine.run_turn, ecfg, gate, jobs, cfg["control"], cfg["workspace"], set(cfg["owners"]), synth,
                hear=hear, download=download,
-               hear_max_bytes=int((hc or {}).get("max_mb", 10) * 1024 * 1024))
+               hear_max_bytes=int((hc or {}).get("max_mb", 10) * 1024 * 1024),
+               max_usd_per_day=cfg.get("max_usd_per_day"))
     return h, ecfg
 
 

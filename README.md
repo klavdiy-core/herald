@@ -54,7 +54,7 @@ model could not write at all, and with it alone it could write `CLAUDE.md`.
   and bots are counted and never answered.
 - Forwarded messages are handed to the model as data, not instructions; a forwarded `/stop` is not a command.
 - Commands: `/stop` (no turns, no speaking first, until `/resume`) · `/resume` · `/new` (fresh conversation) ·
-  `/voice off|voice|both` · `/status`.
+  `/voice off|voice|both` · `/status` · `/model NAME|default`.
 - The token never appears in errors or logs.
 - `/stop` is handled before anything else and needs no state: a broken state file cannot block it. A state file that
   cannot be read is kept as `*.bad`; speaking first then stays quiet until you write. An update that crashes its
@@ -128,6 +128,26 @@ The idea (memory and skills in the prompt, nudges after hard work, umbrella skil
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
 The difference: Hermes writes its skills itself, herald only proposes.
 
+## What it costs, and how to spend less
+
+Measured on live turns (Claude Code 2.1.310, a three-word answer, default five tools):
+
+| | cost of one turn | context read |
+|---|---|---|
+| claude-haiku-5-5 | $0.0002 - 0.0005 | ~6,000 tokens |
+| claude-sonnet-5-5 | $0.0069 | ~5,400 |
+| claude-opus-5-5 | $0.0137 | ~5,400 |
+
+About 6,000 tokens of every turn is Claude Code's own system prompt; a resumed session hits the cache, but each turn
+re-reads the whole conversation so far, so long sessions cost more per turn. Tools cost too: `"tools": ["Read"]`
+reads ~2,000 fewer tokens than the default five. A large persona or many approved lessons make the first turn of a
+session dearer (about 3x for +5,000 tokens).
+
+- `/status` shows today's spend and turns; every turn goes into `control/costs.jsonl` (dollars, context tokens).
+- `"max_usd_per_day": 1.0` in the config stops turns and speaking first once today's spend reaches it.
+- `/model claude-haiku-5-5` switches the model from the next turn (kept across restarts); `/model default` goes back.
+- `/new` starts a fresh, cheap session when a long one gets expensive.
+
 ## Limits, honestly
 
 - Hearing is as good as the speech model: the default `small` model is a fair compromise, `--model medium` hears
@@ -143,7 +163,7 @@ The difference: Hermes writes its skills itself, herald only proposes.
 python -m unittest discover -s tests
 ```
 
-147 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+154 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
