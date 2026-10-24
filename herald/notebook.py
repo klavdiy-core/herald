@@ -114,8 +114,13 @@ class Notebook:
     def pending(self):
         if not os.path.exists(self.pending_path):
             return []
-        with open(self.pending_path, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(self.pending_path, encoding="utf-8") as f:
+                props = json.load(f)
+        except (ValueError, OSError):
+            return []                     # unreadable: nothing waiting; the next /learn writes it fresh
+        ok = isinstance(props, list) and all(isinstance(p, dict) and {"kind", "draft"} <= set(p) for p in props)
+        return props if ok else []
 
     def set_pending(self, props):
         _write(self.pending_path, json.dumps(props, ensure_ascii=False))

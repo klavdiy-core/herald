@@ -69,6 +69,14 @@ class Gate:
                 s = json.load(f)
             if not isinstance(s, dict) or not isinstance(s.get("sent"), list) or not isinstance(s.get("unanswered"), int):
                 raise ValueError("unexpected shape")
+            jobs = s.get("jobs", {})
+            if not isinstance(jobs, dict):
+                raise ValueError("unexpected shape")
+            for t in list(s["sent"]) + list(jobs.values()):   # a bad time here once crashed every tick
+                datetime.fromisoformat(t)
+        except TypeError:
+            os.replace(self.state_path, self.state_path + ".bad")
+            return {"sent": [], "unanswered": self.limits.max_unanswered, "jobs": {}, "broken": True}
         except (ValueError, OSError):
             # unreadable: keep it for a look, and fail closed (silent until the owner writes), never crash /stop
             os.replace(self.state_path, self.state_path + ".bad")
