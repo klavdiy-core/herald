@@ -30,6 +30,9 @@ RECOVERY_WINDOW = 6
 # a failure the agent expected (a red test run on purpose, a planted break) is method, not a mistake
 EXPECTED = re.compile(r"\bred\b|expect\w* (red|fail)|mutant|mutation|planted|красн|должен упасть", re.I)
 MAX_CORRECTION_CHARS = 500
+EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+WITHHELD = "(output without an error line)"
+WRITES = re.compile(r"<<|(?<![0-9&])>>?(?!&)\s*[\w./\\$\"']|Set-Content|Out-File|Add-Content|\btee\b|WriteAllText", re.I)
 
 
 def _identity(tool, inp):
@@ -124,7 +127,7 @@ def _events(path):
     return out
 
 
-def analyze(path, ignore=None):
+def analyze(path, ignore=None, min_repeat=2):
     """ignore: a regex for outputs that are signals, not failures (a tool that exits 1 to say 'unread messages')."""
     ev = _events(path)
     calls = [e for e in ev if e["kind"] == "call"]
@@ -145,7 +148,7 @@ def analyze(path, ignore=None):
                 g["tools"].append(c["tool"])
             if len(g["examples"]) < 3:
                 g["examples"].append(_head(c["input"]))
-    repeated = [g for g in groups.values() if g["count"] >= 2 and g["signature"]]
+    repeated = [g for g in groups.values() if g["count"] >= min_repeat and g["signature"]]
 
     # a recovery: step X failed, later the same step X succeeded -> what happened in between is the fix.
     # Nothing in between = a transient failure (Hermes: do not capture). Fallback: another tool succeeded on the same
@@ -161,11 +164,16 @@ def analyze(path, ignore=None):
             if nxt["ok"] and _identity(nxt["tool"], nxt["input"]) == ident:
                 between = [b for b in window[:k] if b["ok"]]
                 fix = between[0] if between else None
+                if fix and fix["tool"] in EDITS:      # fail, edit the code, pass: that is the job, not a lesson
+                    fix = None
                 break
         else:
             tokens = set(re.findall(r"[\w.-]+\.\w{1,5}", _head(c["input"], 400)))
             fix = next((n for n in window if n["ok"] and n["tool"] != c["tool"]
                         and tokens & set(re.findall(r"[\w.-]+\.\w{1,5}", _head(n["input"], 400)))), None)
+            # an edit after a failed run is fixing the code; it is "instead" only if the shell was writing that file
+            if fix and fix["tool"] in EDITS and not WRITES.search(_head(c["input"], 400)):
+                fix = None
         if fix is None:
             continue
         key = (signature(c["text"]), fix["tool"], _head(fix["input"]))
@@ -193,7 +201,25 @@ def _slug(text):
     return s[:40] or "pattern"
 
 
+def redact(sig, private=True):
+    """In private mode an output line that does not read as an error may be someone's words: say only its shape."""
+    return sig if not private or ERROR_LINE.search(sig) else WITHHELD
+
+
+def _short(inp_head, private):
+    """In private mode a command is cut to program + first argument (a typed message can ride inside a command)."""
+    return " ".join(inp_head.split()[:2]) if private else inp_head
+
+
 def propose(report, private=False):
+    if private:
+        # a withheld output teaches nothing readable: it is dropped, not shown as a blank lesson
+        report = dict(report,
+                      repeated_errors=[dict(g, signature=redact(g["signature"])) for g in report["repeated_errors"]
+                                       if redact(g["signature"]) != WITHHELD],
+                      recoveries=[dict(r, signature=redact(r["signature"]), fix_input=_short(r["fix_input"], True),
+                                       failed_input=_short(r["failed_input"], True)) for r in report["recoveries"]
+                                  if redact(r["signature"]) != WITHHELD])
     props = []
     fixes = {}
     for r in report["recoveries"]:

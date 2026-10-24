@@ -137,6 +137,36 @@ class Realistic(unittest.TestCase):
         fix = [r for r in self.report["recoveries"] if "String to replace" in r["signature"]]
         self.assertEqual(fix[0]["fixed_by"], "Read")
 
+    def test_editing_the_code_between_a_failing_and_a_passing_run_is_the_job(self):
+        t = Transcript()
+        for k in (0, 10):
+            t.tool("Bash", {"command": "python build.py"}, "build error: missing field", T(k), True)
+            t.tool("Edit", {"file_path": "build.py", "old_string": "a", "new_string": "b"}, "ok", T(k + 1))
+            t.tool("Bash", {"command": "python build.py"}, "built", T(k + 2))
+        with tempfile.TemporaryDirectory() as d:
+            props = learning.propose(learning.analyze(t.write(d)), private=True)
+        self.assertFalse(any("instead of Bash" in p["title"] for p in props), props)
+        self.assertFalse(any("build.py" in p["draft"] and p["kind"] == "skill" for p in props), props)
+
+    def test_editing_a_file_after_its_run_failed_is_not_instead(self):
+        t = Transcript()
+        t.tool("PowerShell", {"command": "python a.py 2>&1 | Select -Last 3"}, "NameError: name 'x' is not defined",
+               T(0), True)
+        t.tool("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "ok", T(1))
+        with tempfile.TemporaryDirectory() as d:
+            rep = learning.analyze(t.write(d))
+        self.assertEqual(rep["recoveries"], [])
+
+    def test_private_drops_withheld_outputs_from_skills(self):
+        t = Transcript()
+        for k in (0, 10):
+            t.tool("Bash", {"command": "python inbox.py"}, "see you at nine", T(k), True)
+            t.tool("Read", {"file_path": "inbox.py"}, "...", T(k + 1))
+            t.tool("Bash", {"command": "python inbox.py"}, "ok", T(k + 2))
+        with tempfile.TemporaryDirectory() as d:
+            props = learning.propose(learning.analyze(t.write(d)), private=True)
+        self.assertFalse(any("without an error line" in p["draft"] for p in props if p["kind"] == "skill"), props)
+
     def test_an_unrelated_next_command_is_not_a_fix(self):
         self.assertFalse(any(r["fix_input"] == "ls" for r in self.report["recoveries"]))
 

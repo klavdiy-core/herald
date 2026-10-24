@@ -111,6 +111,16 @@ python -m herald learn ~/.claude/projects/<project>/<session>.jsonl --private --
 `--private` keeps only the mechanics (tools, error lines, what fixed them) and drops every quoted message.
 `--ignore REGEX` marks outputs that are signals, not failures.
 
+For a team of sessions (each started with `claude --name <role>`), one call reads a whole project folder:
+
+```sh
+python -m herald team ~/.claude/projects/<project> --out shared/ --since-hours 24
+```
+
+It writes one proposals file per role and an `INDEX.md` with the errors more than one role keeps hitting: those are
+the rules worth writing for everyone. It is private by default: an output line that does not read as an error is
+withheld (it may be a message someone typed), and commands are cut to the program and its first argument.
+
 The idea (memory and skills in the prompt, nudges after hard work, umbrella skills, "do not save one-off failures")
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
 The difference: Hermes writes its skills itself, herald only proposes.
@@ -130,7 +140,7 @@ The difference: Hermes writes its skills itself, herald only proposes.
 python -m unittest discover -s tests
 ```
 
-148 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+159 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
