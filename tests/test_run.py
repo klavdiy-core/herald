@@ -16,10 +16,16 @@ OWNER = 1001
 
 class FakeBot:
     def __init__(self):
-        self.texts, self.voices, self.updates = [], [], []
+        self.texts, self.voices, self.updates, self.buttons, self.answers = [], [], [], [], []
 
     def send_text(self, chat_id, text):
         self.texts.append((chat_id, text))
+
+    def send_buttons(self, chat_id, text, buttons):
+        self.buttons.append((chat_id, text, list(buttons)))
+
+    def answer_callback(self, callback_id, text=""):
+        self.answers.append((callback_id, text))
 
     def send_voice(self, chat_id, path):
         self.voices.append((chat_id, path))

@@ -26,11 +26,12 @@ class TelegramError(Exception):
 class Message:
     update_id: int
     chat_id: int
-    kind: str              # "text" | "voice"
+    kind: str              # "text" | "voice" | "callback" (a button tap; text = its data)
     text: str = ""
     file_id: str = ""
     forwarded: bool = False
     file_size: int = 0
+    callback_id: str = ""
 
 
 def split_text(text, limit=LIMIT):
@@ -97,6 +98,14 @@ class Bot:
 
     # ---------- in ----------
     def _accept(self, update):
+        cq = update.get("callback_query")
+        if cq:                                  # a button tap: only the owner's, only in the private chat
+            sender, chat = cq.get("from") or {}, ((cq.get("message") or {}).get("chat") or {})
+            if (sender.get("id") in self.owners and not sender.get("is_bot") and chat.get("type") == "private"
+                    and chat.get("id") == sender.get("id") and isinstance(cq.get("data"), str)):
+                return Message(update["update_id"], sender["id"], "callback", text=cq["data"],
+                               callback_id=str(cq.get("id", "")))
+            return None
         m = update.get("message")
         if not m:
             return None
@@ -115,7 +124,7 @@ class Bot:
 
     def poll(self, offset, timeout=50):
         """One long poll. Returns (messages heard, next offset)."""
-        ups = self._call("getUpdates", {"offset": offset, "timeout": timeout, "allowed_updates": ["message"]},
+        ups = self._call("getUpdates", {"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query"]},
                          timeout=timeout + 15) or []
         heard = []
         for u in ups:
@@ -137,6 +146,17 @@ class Bot:
         for part in split_text(text):
             if part:
                 self._call("sendMessage", {"chat_id": chat_id, "text": part})
+
+    def send_buttons(self, chat_id, text, buttons):
+        """One message with a button per row: buttons = [(label, data), ...], data at most 64 bytes."""
+        self._check(chat_id)
+        rows = [[{"text": label[:60], "callback_data": data[:64]}] for label, data in buttons]
+        self._call("sendMessage", {"chat_id": chat_id, "text": split_text(text)[0] or "…",
+                                   "reply_markup": {"inline_keyboard": rows}})
+
+    def answer_callback(self, callback_id, text=""):
+        """Stops the button's spinner; the text shows as a short toast."""
+        self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:200]})
 
     def send_voice(self, chat_id, ogg_path):
         self._check(chat_id)

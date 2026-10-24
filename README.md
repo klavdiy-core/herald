@@ -133,6 +133,22 @@ The idea (memory and skills in the prompt, nudges after hard work, umbrella skil
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
 The difference: Hermes writes its skills itself, herald only proposes.
 
+## Buttons: decide with one tap
+
+When the owner should pick between options, the model ends its answer with `[[choices: Rewrite | Patch it]]`
+(every turn is told how). herald turns that into buttons, adds **Postpone**, and sends the pick back to the model as
+the next message. A room's summary comes with **Accept / One more round / Postpone**; Accept is written into the
+room's record.
+
+- A tap counts once: a double tap gets "Already decided", not a second turn.
+- Each choice has a lifetime (`decision_ttl_s`, a day by default). A postponed or ignored one expires and is reported
+  once, in one line; the buttons are not pushed again.
+- Only the owner's taps in the private chat are heard; anything that does not match a live decision exactly is
+  refused. Decisions live in `control/decisions.json`, so a tap still works after a restart.
+
+Checked live: asked to help pick a bot name, haiku answered with buttons (Pebble / Echo / Lark / Postpone); the tap
+on Echo came back to it and it went on from there.
+
 ## The room: agents discuss, you watch and steer
 
 `python -m herald room --config control/config.json` opens a small page on your machine (127.0.0.1, a random token
@@ -207,7 +223,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-209 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+221 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

@@ -52,6 +52,7 @@ class Room:
         self.messages, self.events, self.listeners = [], [], []
         self.spent, self.turn, self.rounds = 0.0, 0, 0
         self.paused, self.forced, self.focus, self.closed, self.over = False, None, None, False, False
+        self.record_path = None
 
     # ---------- events ----------
     def listen(self, fn):
@@ -148,6 +149,19 @@ class Room:
                 return False
         return True
 
+    def reopen(self):
+        """After a summary, for one more round."""
+        self.closed = False
+
+    def decide(self, decision):
+        """The owner's decision goes into the latest record."""
+        if self.record_path and os.path.exists(self.record_path):
+            with open(self.record_path, encoding="utf-8") as f:
+                rec = json.load(f)
+            rec["decision"] = decision
+            with open(self.record_path, "w", encoding="utf-8") as f:
+                json.dump(rec, f, ensure_ascii=False, indent=1)
+
     def end(self, summarizer=None):
         """Close the room: a summary for the owner and a record on disk."""
         self.closed = True
@@ -158,7 +172,8 @@ class Room:
         if self.record_dir:
             os.makedirs(self.record_dir, exist_ok=True)
             slug = re.sub(r"[^a-z0-9]+", "-", self.topic.lower())[:40].strip("-") or "room"
-            path = os.path.join(self.record_dir, f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}.json")
+            path = os.path.join(self.record_dir, f"{time.strftime('%Y%m%d-%H%M%S')}-{len(self.messages):03d}-{slug}.json")
+            self.record_path = path
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"topic": self.topic, "format": self.fmt, "spent_usd": round(self.spent, 4),
                            "seats": [{"name": s.agent.name, "role": s.role} for s in self.seats],

@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 
-from . import agents, doctor, engine, hearing, jev, learning, notebook, room, speak_first, telegram, voice
+from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, room, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
@@ -83,11 +83,27 @@ def _command_word(t):
     return word.split("@", 1)[0]
 
 
+CHOICES = re.compile(r"\n?\[\[\s*choices?\s*:\s*([^\]\n]+)\]\]\s*$", re.I)
+TAP = re.compile(r"^d:([0-9a-f]{8}):(\d|p)$")
+BUTTONS_HINT = ("When the owner should pick between a few concrete options, end your answer with one line "
+                "[[choices: option one | option two]] (2 to 5 short options). They become buttons in Telegram; "
+                "the owner's pick comes back to you as the next message.")
+
+
+def _choices(text):
+    """'...\\n[[choices: A | B]]' at the end of an answer -> (text without it, ['A', 'B']); up to 5 options."""
+    m = CHOICES.search(text)
+    if not m:
+        return text, []
+    opts = [o.strip()[:60] for o in m.group(1).split("|") if o.strip()][:5]
+    return text[:m.start()].rstrip() or text, opts
+
+
 class Herald:
     def __init__(self, bot, run_turn, engine_cfg, gate, jobs, control, workspace, owners, synth=None,
                  hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
                  max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
-                 room_sync=False):
+                 room_sync=False, decision_ttl_s=24 * 3600, now=time.time):
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -100,6 +116,8 @@ class Herald:
         self.costs_path = os.path.join(control, "costs.jsonl")
         self.room_agents, self.room_judge, self.room_budget = room_agents or {}, room_judge, room_budget
         self.room_roles, self.room_sync, self.room_busy = room_roles or {}, room_sync, False
+        self.decisions = decisions.Decisions(os.path.join(control, "decisions.json"), now, decision_ttl_s)
+        self.live_rooms = {}                            # decision id -> the Room its summary buttons belong to
 
     # ---------- state ----------
     def _state(self):
@@ -167,9 +185,7 @@ class Herald:
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:
                 persona = f.read()
-        text = self.nb.compose(persona)
-        if not text:
-            return cfg
+        text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT
         path = os.path.join(self.control, "system.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -196,6 +212,8 @@ class Herald:
         if m.kind == "text" and not m.forwarded and _command_word(m.text) == "/stop":
             return self._command(m.chat_id, "/stop")      # the kill switch needs no state, so nothing stands before it
         self.gate.record_owner_reply()
+        if m.kind == "callback":
+            return self._tap(m)
         if m.kind == "voice" and os.path.exists(self.stop_path):
             self.bot.send_text(m.chat_id, "Stopped. /resume to continue.")   # not even downloaded while stopped
             return
@@ -226,12 +244,36 @@ class Herald:
             self.bot.send_text(m.chat_id, "That failed before reaching Claude; the reason is in control/audit.log.")
             return
         self._log(f"turn ok={r.ok} cost={r.cost_usd} denials={r.denials} voice={heard is not None}")
-        if r.ok:
-            answer = r.text or "(empty answer)"
-            shown = (f"heard: {heard}\n\n{answer}" if heard is not None else answer) + self._nudge(r)
-            self._reply(m.chat_id, shown, spoken=answer)
+        self._answer(m.chat_id, r, heard)
+
+    def _answer(self, chat_id, r, heard=None):
+        if not r.ok:
+            return self.bot.send_text(chat_id, f"That turn failed: {r.error}")
+        answer, options = _choices(r.text or "(empty answer)")
+        shown = (f"heard: {heard}\n\n{answer}" if heard is not None else answer) + self._nudge(r)
+        if options:                                     # the model offered choices: they become buttons
+            did = self.decisions.offer(answer[-500:], options)
+            self.bot.send_buttons(chat_id, shown, [(o, f"d:{did}:{i}") for i, o in enumerate(options)]
+                                  + [("Postpone", f"d:{did}:p")])
         else:
-            self.bot.send_text(m.chat_id, f"That turn failed: {r.error}")
+            self._reply(chat_id, shown, spoken=answer)
+
+    def _tap(self, m):
+        hit = TAP.match(m.text or "")
+        outcome, d = self.decisions.tap(hit.group(1), "p" if hit.group(2) == "p" else int(hit.group(2))) \
+            if hit else ("unknown", None)
+        say = {"unknown": "Unknown button.", "expired": "This choice expired.",
+               "already": f"Already decided: {d['choice'] if d else ''}",
+               "postponed": f"Postponed; it expires in {self.decisions.ttl_s // 3600} h."}
+        if outcome != "chosen":
+            return self.bot.answer_callback(m.callback_id, say[outcome])
+        self.bot.answer_callback(m.callback_id, f"Chosen: {d['choice']}")
+        if d["kind"] == "room":
+            return self._room_choice(m.chat_id, d)
+        if os.path.exists(self.stop_path) or self._over_budget():
+            return self.bot.send_text(m.chat_id, f"Noted: {d['choice']}. No turn now (stopped or over budget).")
+        r = self._turn(f"The owner chose: {d['choice']} (you had offered: {d['text'][-300:]})")
+        self._answer(m.chat_id, r)
 
     def _hear(self, m):
         """A voice message -> its transcript, or None after telling the owner why it could not be heard."""
@@ -325,11 +367,7 @@ class Herald:
                 for _ in range(len(room.PHASES["brainstorm"])):
                     if not r.round():
                         break
-                summary = r.end()
-                with open(self.costs_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
-                                        "usd": round(r.spent, 6), "kind": "room", "ok": True}) + "\n")
-                self._reply(chat_id, f"Room on «{topic}», summary (${r.spent:.3f}):\n\n{summary}"[:4000])
+                self._room_summary(chat_id, r)
             except Exception:  # noqa: BLE001 — a failed room is told, never a dead daemon
                 self._log("room crashed:\n" + traceback.format_exc())
                 self.bot.send_text(chat_id, "The room failed; the reason is in control/audit.log.")
@@ -339,6 +377,41 @@ class Herald:
             talk()
         else:
             threading.Thread(target=talk, daemon=True).start()
+
+    def _room_summary(self, chat_id, r):
+        """Close the room, count its new spend, send the summary with Accept / One more round / Postpone."""
+        summary = r.end()
+        new = r.spent - getattr(r, "logged", 0.0)
+        r.logged = r.spent
+        with open(self.costs_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                "usd": round(new, 6), "kind": "room", "ok": True}) + "\n")
+        key = secrets.token_hex(4)
+        self.live_rooms[key] = r
+        did = self.decisions.offer(f"room: {r.topic}", ["Accept", "One more round"], kind="room",
+                                   meta={"room": key, "record": r.record_path})
+        self.bot.send_buttons(chat_id, f"Room on «{r.topic}», summary (${r.spent:.3f}):\n\n{summary}"[:4000],
+                              [("Accept", f"d:{did}:0"), ("One more round", f"d:{did}:1"), ("Postpone", f"d:{did}:p")])
+
+    def _room_choice(self, chat_id, d):
+        r = self.live_rooms.get(d["meta"].get("room"))
+        if d["choice"] == "Accept":
+            if r:
+                r.decide("accepted")
+            elif d["meta"].get("record") and os.path.exists(d["meta"]["record"]):
+                with open(d["meta"]["record"], encoding="utf-8") as f:
+                    rec = json.load(f)
+                rec["decision"] = "accepted"
+                with open(d["meta"]["record"], "w", encoding="utf-8") as f:
+                    json.dump(rec, f, ensure_ascii=False, indent=1)
+            return self.bot.send_text(chat_id, "Recorded: accepted.")
+        if not r:
+            return self.bot.send_text(chat_id, "That room is closed (herald restarted); start a new /room.")
+        if self._over_budget():
+            return self.bot.send_text(chat_id, "Today's daily budget is used up; no more rounds today.")
+        r.reopen()
+        r.round()
+        self._room_summary(chat_id, r)
 
     def _command(self, chat_id, t):
         _, _, arg = t.partition(" ")
@@ -409,6 +482,9 @@ class Herald:
 
     # ---------- speaking first ----------
     def tick(self):
+        for d in self.decisions.expire_due():           # said once; the buttons are not pushed again
+            for owner in sorted(self.owners):
+                self.bot.send_text(owner, f"Expired without a decision: {d['text'][:200]}")
         ok, why = self.gate.may_speak()
         if not ok or self._over_budget():
             return                                  # jobs are not spent while the gate is closed

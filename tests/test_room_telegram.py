@@ -39,7 +39,7 @@ class RoomInTelegram(unittest.TestCase):
         texts = [t for _, t in self.bot.texts]
         self.assertIn("name the bot", texts[0])                       # started, says who sits there
         self.assertIn("Raven", texts[0])
-        self.assertIn("go with idea", texts[-1])
+        self.assertIn("go with idea", self.bot.buttons[-1][1])          # the summary comes with its buttons
         self.assertEqual(len(os.listdir(os.path.join(self.control, "rooms"))), 1)
 
     def test_room_money_goes_into_the_daily_ledger(self):

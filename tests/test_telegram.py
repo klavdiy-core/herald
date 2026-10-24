@@ -33,6 +33,28 @@ class BotTest(unittest.TestCase):
     def updates(self, *ups):
         self.api.replies["getUpdates"] = [(200, {"ok": True, "result": list(ups)})]
 
+    def cb(self, update_id, data, from_id=OWNER, chat_type="private"):
+        return {"update_id": update_id, "callback_query": {
+            "id": f"cb{update_id}", "from": {"id": from_id, "is_bot": False}, "data": data,
+            "message": {"message_id": 9, "chat": {"id": from_id, "type": chat_type}}}}
+
+    def test_buttons_are_sent_as_an_inline_keyboard(self):
+        self.bot.send_buttons(OWNER, "pick one", [("A", "d:1:0"), ("Postpone", "d:1:9")])
+        p = self.api.of("sendMessage")[-1]
+        self.assertEqual(p["text"], "pick one")
+        rows = p["reply_markup"]["inline_keyboard"]
+        self.assertEqual([b["callback_data"] for row in rows for b in row], ["d:1:0", "d:1:9"])
+
+    def test_a_tap_by_the_owner_is_heard_and_a_strangers_is_not(self):
+        self.updates(self.cb(1, "d:1:0"), self.cb(2, "d:1:0", from_id=2002), self.cb(3, "d:1:0", chat_type="group"))
+        heard, _ = self.bot.poll(0)
+        self.assertEqual([(m.kind, m.text, m.callback_id) for m in heard], [("callback", "d:1:0", "cb1")])
+        self.assertIn("callback_query", self.api.of("getUpdates")[-1]["allowed_updates"])
+
+    def test_a_tap_is_answered(self):
+        self.bot.answer_callback("cb1", "Done")
+        self.assertEqual(self.api.of("answerCallbackQuery")[-1], {"callback_query_id": "cb1", "text": "Done"})
+
     def test_only_owner_private_messages_are_heard(self):
         self.updates(
             msg(1, "from owner"),
