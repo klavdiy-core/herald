@@ -1,18 +1,34 @@
-"""python -m herald doctor|run|say --config control/config.json"""
+"""python -m herald doctor|run|say --config control/config.json
+   python -m herald learn <transcript.jsonl> [--private] [--ignore REGEX] [--out proposals.md]"""
 import argparse
 import os
 import sys
 
-from . import doctor, run, voice
+from . import doctor, learning, run, voice
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="herald")
-    ap.add_argument("cmd", choices=["doctor", "run", "say"])
+    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn"])
+    ap.add_argument("transcript", nargs="?", default="")
     ap.add_argument("--config", default="control/config.json")
     ap.add_argument("--text", default="")
-    ap.add_argument("--out", default="say.ogg")
+    ap.add_argument("--out", default="")
+    ap.add_argument("--private", action="store_true", help="learn: keep mechanics, drop every quoted message")
+    ap.add_argument("--ignore", default="", help="learn: regex for outputs that are signals, not failures")
     a = ap.parse_args(argv)
+    if a.cmd == "learn":                         # works on any Claude Code transcript, no config needed
+        if not a.transcript:
+            ap.error("learn needs a transcript path")
+        md = learning.render_md(learning.propose(learning.analyze(a.transcript, a.ignore or None), a.private),
+                                source=os.path.basename(a.transcript))
+        if a.out:
+            with open(a.out, "w", encoding="utf-8") as f:
+                f.write(md)
+        else:
+            sys.stdout.reconfigure(encoding="utf-8")
+            print(md)
+        return 0
     token = os.environ.get("HERALD_TELEGRAM_TOKEN", "")
     cfg = run.load_config(a.config)
     if a.cmd == "doctor":
@@ -24,7 +40,7 @@ def main(argv=None):
         print(doctor.render(checks))
         return 0 if doctor.may_start(checks) else 1
     if a.cmd == "say":
-        print(voice.synth(a.text, a.out, voice.VoiceConfig(**(cfg.get("voice") or {}))))
+        print(voice.synth(a.text, a.out or "say.ogg", voice.VoiceConfig(**(cfg.get("voice") or {}))))
         return 0
     return run.main_run(a.config, token) or 0
 

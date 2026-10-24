@@ -6,7 +6,7 @@
 
 You write to a Telegram bot; herald runs one Claude Code turn in a workspace folder and answers in text, and in a
 voice message if you want (local speech, no cloud). It can also write first, on a schedule, inside limits written in
-code. Small: about 700 lines of Python, standard library plus optional `piper-tts` for the voice.
+code, and it learns from its own sessions, with your approval. Small: about 1300 lines of Python, standard library plus optional `piper-tts` for the voice.
 
 ## Try it in one minute (after the bot exists)
 
@@ -82,6 +82,39 @@ no `STOP` file, not in quiet hours, under the daily cap, past the minimum gap, a
 model can always choose silence by answering `[SILENT]`. A job is not spent while the gate is closed, and a long sleep
 gives one message, not a burst.
 
+## Learning: it gets better at your work, and you approve every lesson
+
+After a session, send `/learn`. herald reads that session's Claude Code transcript and looks for three things:
+an error that happened again and again, the step that finally made a failing step work, and a place where you said
+"no, that didn't work". It answers with numbered proposals:
+
+```
+1. [skill] bash-pitfalls: Bash pitfalls (1) — seen 3 times (Bash), ...
+2. [memory] A claim the human corrected — 2026-10-24T10:41:00Z
+/approve N · /drop N
+```
+
+`/approve 1` keeps it. From then on every turn gets your approved memory and skills in its system prompt. `/memory`
+shows what it keeps, `/forget N` removes a line. The store lives in `control/learned/`, where the model cannot write:
+it learns nothing you did not approve. After a long turn it reminds you once: "/learn to keep what worked".
+
+The analysis is plain code, no model. On real sessions it ignores what is not a mistake: red test runs done on
+purpose, a failing test fixed by editing code (that is the job), text injected by skills, long briefs that happen to
+say "again". A skill is one per tool ("Bash pitfalls"), never one per error message.
+
+It works on any Claude Code transcript too, without Telegram:
+
+```sh
+python -m herald learn ~/.claude/projects/<project>/<session>.jsonl --private --out proposals.md
+```
+
+`--private` keeps only the mechanics (tools, error lines, what fixed them) and drops every quoted message.
+`--ignore REGEX` marks outputs that are signals, not failures.
+
+The idea (memory and skills in the prompt, nudges after hard work, umbrella skills, "do not save one-off failures")
+comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
+The difference: Hermes writes its skills itself, herald only proposes.
+
 ## Limits, honestly
 
 - Hearing is as good as the speech model: the default `small` model is a fair compromise, `--model medium` hears
@@ -97,10 +130,11 @@ gives one message, not a burst.
 python -m unittest discover -s tests
 ```
 
-119 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+148 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
-followed by a typed question in the same session.
+followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
+changed the next answer), and `learn` on three real Claude Code sessions.
 
 ## License
 

@@ -63,6 +63,7 @@ class TurnResult:
     cost_usd: float = 0.0
     denials: list = field(default_factory=list)
     error: str = ""
+    num_turns: int = 0
 
 
 def build_argv(cfg, session_id=None):
@@ -111,7 +112,7 @@ def run_turn(prompt, workspace, cfg, session_id=None):
     denials = [d.get("tool_name", "?") for d in data.get("permission_denials") or []]
     res = TurnResult(not data.get("is_error") and data.get("subtype") == "success",
                      data.get("result") or "", data.get("session_id") or "", float(data.get("total_cost_usd") or 0),
-                     denials)
+                     denials, num_turns=int(data.get("num_turns") or 0))
     if not res.ok:
         res.error = f"claude turn failed: {data.get('subtype')}"
     return res
