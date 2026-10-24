@@ -39,6 +39,12 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(args[args.index("--permission-prompts") + 1], "none")
         self.assertEqual(args[args.index("--setting-sources") + 1], "")
         self.assertEqual(args[args.index("--output-format") + 1], "json")
+        # without it even writes inside the workspace are denied (found by the live canary, 24.10)
+        self.assertEqual(args[args.index("--permission-mode") + 1], "acceptEdits")
+        # acceptEdits would let CLAUDE.md through (live canary, 24.10): hard deny rules ride along
+        deny = json.loads(args[args.index("--settings") + 1])["permissions"]["deny"]
+        for rule in ("Edit(**/CLAUDE.md)", "Edit(**/.claude/**)", "Edit(**/.git/**)", "Edit(**/.mcp.json)"):
+            self.assertIn(rule, deny)
 
     def test_prompt_goes_to_stdin_not_argv(self):
         secretish = "please read --dangerously-skip-permissions"

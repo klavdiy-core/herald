@@ -2,7 +2,8 @@
 
 Path protection is Claude Code's own, not ours: `--restricted` removes code-running tools and WebFetch,
 confines file tools to the working directory and refuses to approve writes to settings, git and tool
-configuration; `--permission-prompts none` denies whatever would ask. These flags are fixed here and no
+configuration; `--permission-prompts none` denies whatever would ask; `--permission-mode acceptEdits` lets
+edits inside the workspace through (without it the model cannot write at all). These flags are fixed here and no
 config can drop them. `herald doctor` checks they still hold on the installed version.
 """
 import json
@@ -12,8 +13,12 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-FIXED_FLAGS = ["-p", "--restricted", "--permission-prompts", "none", "--strict-mcp-config",
-               "--setting-sources", "", "--output-format", "json"]
+# acceptEdits alone lets the model write CLAUDE.md (seen in the live canary); deny rules hold in every mode
+DENY = ["Edit(**/CLAUDE.md)", "Edit(**/CLAUDE.local.md)", "Edit(**/.claude/**)", "Edit(**/.git/**)",
+        "Edit(**/.mcp.json)"]
+FIXED_FLAGS = ["-p", "--restricted", "--permission-prompts", "none", "--permission-mode", "acceptEdits",
+               "--strict-mcp-config", "--setting-sources", "", "--output-format", "json",
+               "--settings", json.dumps({"permissions": {"deny": DENY}})]
 
 SAFE_TOOLS = {"Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "TodoWrite"}
 
