@@ -55,7 +55,7 @@ model could not write at all, and with it alone it could write `CLAUDE.md`.
 - Forwarded messages are handed to the model as data, not instructions, inside a fence with a fresh random tag per
   message (forwarded text cannot close it early); a forwarded `/stop` is not a command. `/stop@yourbot` and `/STOP` work.
 - Commands: `/stop` (no turns, no speaking first, until `/resume`) · `/resume` · `/new` (fresh conversation) ·
-  `/voice off|voice|both` · `/status` · `/model NAME|default` · `/room TOPIC`.
+  `/voice off|voice|both` · `/status` · `/model NAME|default` · `/room TOPIC` · `/recall WORDS`.
 - The token never appears in errors or logs.
 - `/stop` is handled before anything else and needs no state: a broken state file cannot block it. A state file that
   cannot be read is kept as `*.bad`; speaking first then stays quiet until you write. An update that crashes its
@@ -129,7 +129,14 @@ It writes one proposals file per role and an `INDEX.md` with the errors more tha
 the rules worth writing for everyone. It is private by default: an output line that does not read as an error is
 withheld (it may be a message someone typed), and commands are cut to the program and its first argument.
 
-The idea (memory and skills in the prompt, nudges after hard work, umbrella skills, "do not save one-off failures")
+**Search past sessions.** `/recall pricing page` finds what was said in earlier sessions (your messages, including
+ones sent mid-turn, and the model's text; never tool outputs, which hold file contents) and shows each match with the
+reply that followed. It is an SQLite FTS5 index in `control/recall.db`, built only from what is new since the last
+search; no model, no cost. Without Telegram: `python -m herald recall <sessions folder> --query "pricing page"`.
+On a real 35 MB session the first index took about a second, later searches 0.3 s.
+
+The idea (memory and skills in the prompt, nudges after hard work, umbrella skills, "do not save one-off failures",
+search over past sessions)
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
 The difference: Hermes writes its skills itself, herald only proposes.
 
@@ -232,7 +239,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-231 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+240 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

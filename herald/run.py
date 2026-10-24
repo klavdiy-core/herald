@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 
-from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, room, speak_first, telegram, voice
+from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
@@ -23,7 +23,7 @@ SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
 HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
 VOICE_IN = "[voice message, transcribed]\n{}"
 HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /model NAME|default\n"
-        "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC")
+        "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
 NUDGE_STEPS = 8            # a turn this long probably taught something (Hermes nudges after 5+ tool calls)
 NUDGE_EVERY = 5
 NUDGE = "\n\n(That was a long one. /learn to keep what worked.)"
@@ -445,6 +445,14 @@ class Herald:
         cmd = _command_word(t)
         if cmd == "/room":
             self._room(chat_id, arg.strip())
+        elif cmd == "/recall":
+            q = arg.strip()
+            if not q:
+                return self.bot.send_text(chat_id, "/recall <words>: finds what was said in past sessions.")
+            db = os.path.join(self.control, "recall.db")
+            for root in self.roots:                     # this workspace's sessions, wherever Claude Code keeps them
+                recall.index(db, os.path.join(root, "projects", notebook.mangle(self.workspace)))
+            self.bot.send_text(chat_id, recall.render(recall.search(db, q), q)[:3800])
         elif cmd == "/learn":
             self._learn(chat_id)
         elif cmd == "/approve":

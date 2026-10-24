@@ -1,17 +1,20 @@
 """python -m herald doctor|run|say --config control/config.json
    python -m herald learn <transcript.jsonl> [--private] [--ignore REGEX] [--out proposals.md]
    python -m herald team <projects folder> --out <shared folder> [--since-hours N] [--ignore REGEX]
-   python -m herald room --config control/config.json   (the agents' room in a browser)"""
+   python -m herald room --config control/config.json   (the agents' room in a browser)
+   python -m herald recall <sessions folder> --query WORDS [--db FILE]"""
 import argparse
 import os
 import sys
 
-from . import doctor, learning, run, team, voice
+from . import doctor, learning, recall, run, team, voice
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="herald")
-    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn", "team", "room"])
+    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn", "team", "room", "recall"])
+    ap.add_argument("--query", default="", help="recall: words to find in past sessions")
+    ap.add_argument("--db", default="", help="recall: index file (default ~/.herald_recall.db)")
     ap.add_argument("transcript", nargs="?", default="")
     ap.add_argument("--config", default="control/config.json")
     ap.add_argument("--text", default="")
@@ -20,6 +23,14 @@ def main(argv=None):
     ap.add_argument("--ignore", default="", help="learn: regex for outputs that are signals, not failures")
     ap.add_argument("--since-hours", type=float, default=None, help="team: only sessions touched in this window")
     a = ap.parse_args(argv)
+    if a.cmd == "recall":                        # transcript = a folder of Claude Code sessions
+        if not a.transcript or not a.query:
+            ap.error("recall needs a sessions folder and --query")
+        db = a.db or os.path.join(os.path.expanduser("~"), ".herald_recall.db")
+        n = recall.index(db, a.transcript)
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(f"(indexed {n} new message(s))\n" + recall.render(recall.search(db, a.query), a.query))
+        return 0
     if a.cmd == "team":                          # transcript = a Claude Code projects/<project> folder
         if not a.transcript or not a.out:
             ap.error("team needs a projects folder and --out")
