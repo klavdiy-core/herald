@@ -57,6 +57,24 @@ model could not write at all, and with it alone it could write `CLAUDE.md`.
   `/voice off|voice|both` · `/status`.
 - The token never appears in errors or logs.
 
+## Hearing: voice and text in one conversation
+
+Send a voice message: herald transcribes it locally and puts it into the **same** Claude Code session as your typed
+messages. Speak, then go on typing; it remembers what you said.
+
+![a real exchange: a voice message "Запомни число семь" is heard and answered; the next, typed question "which number did I say by voice?" gets "Семь."](examples/voice_then_text.png)
+
+Add a `hearing` block to the config (`pip install faster-whisper` for the default program):
+
+```json
+"hearing": {"timeout_s": 120, "max_mb": 10}
+```
+
+The reply starts with `heard: …` so you see what it understood; only the answer is spoken back. Any program can do
+the hearing (`"stt_cmd": [...]`, audio path appended, transcript on stdout). The default tries the GPU and falls back
+to the CPU when CUDA libraries are missing. A long message (over `max_mb`) is not downloaded; anything that fails
+gets "I couldn't hear that one. Please type it." Spoken words are never commands: saying "slash stop" stops nothing.
+
 ## Speaking first
 
 Off until `speak_first.enabled` is true. Then a job (`"at": "09:30"` or `"every_min": 60`) may produce a message only if:
@@ -66,7 +84,8 @@ gives one message, not a burst.
 
 ## Limits, honestly
 
-- No hearing yet: a voice message from you gets "please type it".
+- Hearing is as good as the speech model: the default `small` model is a fair compromise, `--model medium` hears
+  better and slower.
 - The voice speaks short plain answers only (no code, no tables, under 600 characters), and a Russian voice reads
   Latin words badly ("herald" comes out as "Эволд").
 - The canary is checked with Claude Code 2.1.310 on Windows. Run `doctor` after every Claude Code update.
@@ -78,9 +97,10 @@ gives one message, not a burst.
 python -m unittest discover -s tests
 ```
 
-100 tests against a fake `claude`, a fake Bot API and a fake `piper`; each module was also checked with planted
-breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, and an end-to-end run with a real
-Claude turn and a real voice message through a fake Bot API.
+119 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
+and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
+followed by a typed question in the same session.
 
 ## License
 

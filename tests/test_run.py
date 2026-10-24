@@ -125,6 +125,51 @@ class HeraldTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.control, "STOP")))
         self.assertEqual(len(self.engine.calls), 1)
 
+    def hearing_herald(self, hear):
+        h = self.make()
+        h.hear = hear
+        h.download = lambda file_id, out: open(out, "wb").close()
+        return h
+
+    def test_a_voice_message_joins_the_same_conversation(self):
+        h = self.hearing_herald(lambda path: "what did I ask before?")
+        h.handle(text("remember the number 7"))
+        h.handle(Message(2, OWNER, "voice", file_id="F", file_size=1000))
+        self.assertEqual(self.engine.calls[1]["session"], "sess-1")                 # same session as the text
+        self.assertIn("what did I ask before?", self.engine.calls[1]["prompt"])
+        self.assertIn("voice", self.engine.calls[1]["prompt"].lower())
+        self.assertTrue(self.bot.texts[-1][1].startswith("heard: what did I ask before?"))
+        self.assertIn("hello", self.bot.texts[-1][1])
+
+    def test_a_voice_message_that_cannot_be_heard_gets_a_plain_answer(self):
+        from herald.hearing import HearingError
+
+        def deaf(path):
+            raise HearingError("stt: exit 3")
+        h = self.hearing_herald(deaf)
+        h.handle(Message(1, OWNER, "voice", file_id="F", file_size=1000))
+        self.assertEqual(self.engine.calls, [])
+        self.assertIn("type", self.bot.texts[-1][1].lower())
+
+    def test_spoken_slash_words_are_not_commands(self):
+        h = self.hearing_herald(lambda path: "/stop the music")
+        h.handle(Message(1, OWNER, "voice", file_id="F", file_size=1000))
+        self.assertFalse(os.path.exists(os.path.join(self.control, "STOP")))
+        self.assertEqual(len(self.engine.calls), 1)
+
+    def test_a_long_voice_message_is_not_downloaded(self):
+        got = []
+        h = self.hearing_herald(lambda path: "x")
+        h.download = lambda file_id, out: got.append(file_id)
+        h.handle(Message(1, OWNER, "voice", file_id="F", file_size=50 * 1024 * 1024))
+        self.assertEqual((got, self.engine.calls), ([], []))
+
+    def test_only_the_answer_is_spoken_not_the_heard_line(self):
+        h = self.hearing_herald(lambda path: "say hi")
+        h.handle(text("/voice both"))
+        h.handle(Message(2, OWNER, "voice", file_id="F", file_size=1000))
+        self.assertEqual(self.synth_calls[-1], "hello")
+
     def test_a_voice_message_is_answered_plainly_without_a_turn(self):
         self.h.handle(Message(1, OWNER, "voice", file_id="F"))
         self.assertEqual(self.engine.calls, [])

@@ -8,11 +8,23 @@ class FakeTelegram:
     def __init__(self):
         self.calls = []          # (method, params dict or raw multipart bytes)
         self.replies = {}        # method -> list of (status, body dict); popped in order, last one repeats
+        self.files = {}          # file_path -> bytes, served at /file/bot<token>/<file_path>
+        self.file_gets = 0
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
                 pass
+
+            def do_GET(self):
+                outer.file_gets += 1
+                path = self.path.split("/", 3)[-1] if self.path.startswith("/file/") else ""
+                data = outer.files.get(path)
+                self.send_response(200 if data is not None else 404)
+                body = data if data is not None else b'{"ok":false,"error_code":404,"description":"Not Found"}'
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
             def do_POST(self):
                 method = self.path.rsplit("/", 1)[-1]

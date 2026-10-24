@@ -13,6 +13,7 @@
     "piper_cmd": ["piper"],
     "link_word": "link"
   },
+  "hearing": {"timeout_s": 120, "max_mb": 10},
   "speak_first": {
     "enabled": false,
     "per_day": 3,

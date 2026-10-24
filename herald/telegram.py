@@ -30,6 +30,7 @@ class Message:
     text: str = ""
     file_id: str = ""
     forwarded: bool = False
+    file_size: int = 0
 
 
 def split_text(text, limit=LIMIT):
@@ -106,7 +107,8 @@ class Bot:
             return None
         fwd = any(k in m for k in ("forward_origin", "forward_from", "forward_from_chat", "forward_date"))
         if "voice" in m:
-            return Message(update["update_id"], chat["id"], "voice", file_id=m["voice"]["file_id"], forwarded=fwd)
+            return Message(update["update_id"], chat["id"], "voice", file_id=m["voice"]["file_id"], forwarded=fwd,
+                           file_size=int(m["voice"].get("file_size") or 0))
         if "text" in m:
             return Message(update["update_id"], chat["id"], "text", text=m["text"], forwarded=fwd)
         return None
@@ -140,6 +142,26 @@ class Bot:
         self._check(chat_id)
         with open(ogg_path, "rb") as f:
             self._call("sendVoice", {"chat_id": str(chat_id)}, files={"voice": (os.path.basename(ogg_path), f.read())})
+
+    def download(self, file_id, out_path, max_bytes=20 * 1024 * 1024):
+        """getFile, check the size BEFORE fetching, then fetch. Errors are redacted like every other call."""
+        info = self._call("getFile", {"file_id": file_id}) or {}
+        size, path = int(info.get("file_size") or 0), info.get("file_path")
+        if not path:
+            raise TelegramError("getFile: no file_path")
+        if size > max_bytes:
+            raise TelegramError(f"getFile: file is {size} bytes, limit {max_bytes}")
+        url = self._base.replace("/bot", "/file/bot", 1) + path
+        try:
+            with urllib.request.urlopen(url, timeout=self._timeout) as r:
+                data = r.read(max_bytes + 1)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise TelegramError(f"download: {self._redact(e)}") from None
+        if len(data) > max_bytes:
+            raise TelegramError("download: file larger than the limit")
+        with open(out_path, "wb") as f:
+            f.write(data)
+        return out_path
 
     def send_action(self, chat_id, action="typing"):
         self._check(chat_id)
