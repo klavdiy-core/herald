@@ -59,9 +59,12 @@ def main(argv=None):
         rc = cfg.get("room") or {}
         judge = jev.from_env()
         vs = run.room_voices(cfg)
+        os.makedirs(cfg["control"], exist_ok=True)
+        should_stop, on_spend = run.room_guard(cfg)
         srv = room_web.serve(ag, record_dir=os.path.join(cfg["control"], "rooms"), judge=judge,
                              port=rc.get("port", 8765), pace_s=rc.get("pace_s", 0.3), background=False,
-                             synth=voice.synth if vs else None, voices=vs)
+                             synth=voice.synth if vs else None, voices=vs, should_stop=should_stop,
+                             on_spend=on_spend, default_budget=rc.get("budget_usd", 0.5))
         print(f"room: {srv.url}\nmoderator: {'Jev' if judge else 'off (set TYPESAFE_API_KEY)'} · Ctrl+C to stop")
         try:
             srv.serve_forever()
@@ -79,5 +82,14 @@ def main(argv=None):
     return run.main_run(a.config, token) or 0
 
 
+def cli(argv=None):
+    """A missing file, a folder instead of a file or a broken config is one plain line, not a traceback."""
+    try:
+        return main(argv)
+    except (OSError, ValueError) as e:
+        print(f"herald: {e}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

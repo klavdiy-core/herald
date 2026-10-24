@@ -26,8 +26,11 @@ def speech(text, limit=600):
 
 
 class State:
-    def __init__(self, agents, record_dir, judge, pace_s, synth=None, voices=None):
+    def __init__(self, agents, record_dir, judge, pace_s, synth=None, voices=None, should_stop=None, on_spend=None,
+                 default_budget=None):
         self.agents, self.record_dir, self.judge, self.pace_s = agents, record_dir, judge, pace_s
+        # the same guard as a room from Telegram: STOP and the daily cap before every reply, spend into the ledger
+        self.should_stop, self.on_spend, self.default_budget = should_stop, on_spend, default_budget
         self.room, self.target, self.thread, self.ended = None, 0, None, False
         self.synth, self.voices, self.started = synth, voices or {}, 0   # voices: agent name -> its voice
         self.audio_dir = os.path.join(record_dir or tempfile.gettempdir(), "audio")
@@ -55,12 +58,23 @@ class State:
             raise ValueError("topic, format and at least one seat are needed")
         if any(s.get("name") not in self.agents for s in seats):
             raise ValueError("unknown agent")
-        budget = body.get("budget_usd")
+        r = self.room
+        if r is not None and not (r.closed or r.halted or r.over):
+            raise ValueError("a room is already talking; end it first")
+        budget = body.get("budget_usd") or self.default_budget
         self.room = roomlib.Room(topic, [roomlib.Seat(self.agents[s["name"]], str(s.get("role") or "ideas")[:60])
                                          for s in seats], fmt=fmt,
                                  budget_usd=float(budget) if budget else None, judge=self.judge,
                                  record_dir=self.record_dir)
         self.target, self.ended, self.started = len(roomlib.PHASES[fmt]), False, int(time.time() * 1000)
+        room, reported = self.room, [0.0]
+        room.should_stop = self.should_stop
+
+        def spend(e):                                   # each reply's money goes to the ledger as it happens
+            if e["type"] in ("message", "summary", "halted") and self.on_spend and room.spent > reported[0]:
+                self.on_spend(room.spent - reported[0])
+                reported[0] = room.spent
+        room.listen(spend)
         self.room._emit("started", topic=topic, format=fmt,
                         seats=[{"name": s.agent.name, "role": s.role} for s in self.room.seats])
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -168,9 +182,10 @@ def handler_for(state, token):
     return H
 
 
-def serve(agents, record_dir=None, judge=None, port=8765, pace_s=0.3, background=True, synth=None, voices=None):
+def serve(agents, record_dir=None, judge=None, port=8765, pace_s=0.3, background=True, synth=None, voices=None,
+          should_stop=None, on_spend=None, default_budget=None):
     token = secrets.token_urlsafe(16)
-    state = State(agents, record_dir, judge, pace_s, synth, voices)
+    state = State(agents, record_dir, judge, pace_s, synth, voices, should_stop, on_spend, default_budget)
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler_for(state, token))
     srv.token, srv.state = token, state
     srv.url = f"http://127.0.0.1:{srv.server_port}/?t={token}"

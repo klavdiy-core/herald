@@ -108,7 +108,10 @@ class Room:
                 f"Discussion so far:\n{said}\n\nYour turn, {seat.agent.name}:")
 
     def _say(self, agent, prompt):
-        text, cost = agent.speak(prompt)
+        try:
+            text, cost = agent.speak(prompt)
+        except Exception as e:  # noqa: BLE001 — one broken participant must not take the room down
+            text, cost = f"({agent.name} could not answer: {type(e).__name__})", 0.0
         self.spent += float(cost or 0)
         return (text or "").strip()
 

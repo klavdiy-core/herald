@@ -62,6 +62,9 @@ def index(db, folder):
                 session, n = name[:-6], 0
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for n, line in enumerate(f, 1):
+                        if not line.endswith("\n"):
+                            n -= 1                      # still being written: read it next time, once it is whole
+                            break
                         if n <= done:
                             continue
                         try:
@@ -70,9 +73,11 @@ def index(db, folder):
                             continue
                         said = _said(rec)
                         if said:
+                            # a lone surrogate (half an emoji) cannot be stored: replace it, keep the message
+                            t = said[1][:4000].encode("utf-8", "replace").decode("utf-8")
                             cur = con.execute("INSERT INTO messages(session, role, ts, text) VALUES (?,?,?,?)",
-                                              (session, said[0], str(rec.get("timestamp", ""))[:19], said[1][:4000]))
-                            con.execute("INSERT INTO fts(rowid, text) VALUES (?,?)", (cur.lastrowid, said[1][:4000]))
+                                              (session, said[0], str(rec.get("timestamp", ""))[:19], t))
+                            con.execute("INSERT INTO fts(rowid, text) VALUES (?,?)", (cur.lastrowid, t))
                             added += 1
                 con.execute("INSERT OR REPLACE INTO files(path, lines, size) VALUES (?,?,?)", (path, max(n, done), size))
         con.commit()

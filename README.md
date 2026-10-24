@@ -201,8 +201,9 @@ gives it an empty folder of its own and the same allow-listed environment as a C
 `TYPESAFE_API_KEY`); a CLI that needs its own key names it in `"pass_env": ["ITS_KEY"]`. Treat a command agent as
 code you run yourself.
 
-`/stop` and the daily cap are checked before every reply in a room, not only when it starts; a stopped room says so
-and makes no summary. Its spend goes into the ledger even when it stops early.
+`/stop` and the daily cap are checked before every reply in a room, in Telegram and in the browser alike, not only
+when it starts; a stopped room says so and makes no summary. Its spend goes into the ledger reply by reply. The
+browser room has a default budget (`room.budget_usd`, $0.50) and runs one room at a time.
 
 The room in the picture: three haiku roles, three rounds and a summary, 67 seconds, $0.008. A room of three Claude
 roles and Gemini (through its own CLI) deciding herald's next feature took 121 seconds and $0.013.
@@ -237,7 +238,8 @@ session dearer (about 3x for +5,000 tokens).
 - The voice speaks short plain answers only (no code, no tables, under 600 characters), and a Russian voice reads
   Latin words badly ("herald" comes out as "Эволд").
 - The canary is checked with Claude Code 2.1.310 on Windows. Run `doctor` after every Claude Code update.
-- One worker: messages are handled one at a time.
+- One worker: messages are handled one at a time, so `/stop` takes effect after the turn already running (bounded
+  by its own budget and time limit), not in the middle of it.
 
 ## Test
 
@@ -245,7 +247,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-246 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+257 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

@@ -49,6 +49,13 @@ def load_config(path):
         raise ValueError(f"unknown config keys (refusing to guess): {sorted(unknown)}")
     if not cfg.get("owners"):
         raise ValueError("owners must not be empty")
+    # Telegram ids are numbers; "1001" written as a string once left the bot silently deaf
+    owners = []
+    for o in cfg["owners"]:
+        if isinstance(o, bool) or not (isinstance(o, int) or (isinstance(o, str) and re.fullmatch(r"-?[0-9]+", o))):
+            raise ValueError(f"owners must be Telegram user ids (numbers), got {o!r}")
+        owners.append(int(o))
+    cfg["owners"] = owners
     # a cap written as "0.5" once passed and made the bot silently deaf: numbers must be numbers
     numbers = [(k, cfg.get(k)) for k in ("max_turns", "max_budget_usd", "timeout_s", "max_usd_per_day")]
     numbers += [(f"room.{k}", (cfg.get("room") or {}).get(k)) for k in ("port", "budget_usd", "pace_s")]
@@ -167,17 +174,7 @@ class Herald:
     # ---------- money ----------
     def _today(self):
         """(dollars, turns) spent today, from the ledger."""
-        day, usd, n = time.strftime("%Y-%m-%d"), 0.0, 0
-        if os.path.exists(self.costs_path):
-            with open(self.costs_path, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    if row.get("day") == day:
-                        usd, n = usd + float(row.get("usd") or 0), n + 1
-        return usd, n
+        return spent_today(self.costs_path)
 
     def _over_budget(self, extra=0.0):
         """extra: money spent but not in the ledger yet (a room that is still talking)."""
@@ -350,7 +347,7 @@ class Herald:
 
     def _pick(self, chat_id, arg):
         props = self.nb.pending()
-        n = int(arg) if arg.strip().isdigit() else 0
+        n = int(arg) if re.fullmatch(r"[0-9]{1,4}", arg.strip()) else 0     # "²" passes isdigit() and breaks int()
         if not 1 <= n <= len(props) or props[n - 1].get("done"):
             self.bot.send_text(chat_id, f"There is no proposal {arg.strip() or '?'} waiting. /learn first.")
             return None, None
@@ -474,7 +471,7 @@ class Herald:
         elif cmd == "/forget":
             name = arg.strip()
             try:
-                if name and not name.isdigit():
+                if name and not re.fullmatch(r"[0-9]+", name):
                     self.nb.forget_skill(name)
                     self.bot.send_text(chat_id, f"Skill {name} is out of every turn (kept in learned/archive).")
                 else:
@@ -567,6 +564,38 @@ def room_agents(cfg, claude_cmd=None):
             raise ValueError(f"two agents are named {a.name}")
         out[a.name] = a
     return out
+
+
+def spent_today(costs_path):
+    """(dollars, turns) in the ledger for today; damaged rows are skipped."""
+    day, usd, n = time.strftime("%Y-%m-%d"), 0.0, 0
+    if os.path.exists(costs_path):
+        with open(costs_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    if row.get("day") == day:
+                        usd, n = usd + float(row.get("usd") or 0), n + 1
+                except (ValueError, TypeError, AttributeError):
+                    continue                            # a damaged row is skipped, never a deaf bot
+    return usd, n
+
+
+def room_guard(cfg):
+    """(should_stop, on_spend) for the browser room: the same STOP file, daily cap and ledger as the bot."""
+    costs, stop, cap = os.path.join(cfg["control"], "costs.jsonl"), os.path.join(cfg["control"], "STOP"), \
+        cfg.get("max_usd_per_day")
+
+    def should_stop():
+        if os.path.exists(stop):
+            return "stop"
+        return "budget" if cap is not None and spent_today(costs)[0] >= cap else None
+
+    def on_spend(usd):
+        with open(costs, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                "usd": round(usd, 6), "kind": "room", "ok": True}) + "\n")
+    return should_stop, on_spend
 
 
 def room_voices(cfg):
