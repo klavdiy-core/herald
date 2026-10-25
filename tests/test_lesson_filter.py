@@ -95,7 +95,7 @@ class Filter(unittest.TestCase):
         two = write(self.tmp.name, "h2", heredoc)
         self.assertNotIn("Write", json.dumps(learning.propose(learning.analyze_many([one]), min_sessions=2)))
         both = learning.propose(learning.analyze_many([one, two]), min_sessions=2)
-        self.assertIn("(via Write)", json.dumps(both))                 # two sessions: now it is a lesson
+        self.assertIn("with Write", json.dumps(both))                 # two sessions: now it is a lesson
 
     def test_not_lessons_are_shown_apart(self):
         md = learning.render_md(self.props, not_lessons=self.report["not_lessons"])

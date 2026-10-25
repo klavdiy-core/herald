@@ -10,7 +10,7 @@ TOKEN = "123456789:AAH-fake_token_value_for_tests_00000"
 HELP_OK = "  --restricted   Restricted mode...\n  --permission-prompts <target> ...\n"
 
 
-def fake_turn(actions, text="done"):
+def fake_turn(actions, text="done", denials=("Read", "Write", "Write")):
     """A run_turn stand-in: performs file actions inside cwd=workspace like a model would."""
     def run(prompt, workspace, cfg, session_id=None):
         for rel, content in actions:
@@ -22,8 +22,18 @@ def fake_turn(actions, text="done"):
         if "SECRET" in text:
             with open(os.path.join(workspace, "..", "outside", "secret.txt")) as f:
                 out = f.read()
-        return TurnResult(True, out, "s", 0.001, ["Read", "Write", "Write"])
+        return TurnResult(True, out, "s", 0.001, list(denials))
     return run
+
+
+class ToolsTest(unittest.TestCase):
+    def test_websearch_is_allowed_but_named_as_a_way_out(self):
+        from herald.engine import EngineConfig
+        c = doctor.check_tools(EngineConfig(tools=["Read", "WebSearch"]))
+        self.assertFalse(c.ok)
+        self.assertFalse(c.fatal)                       # a warning: the owner may want it
+        self.assertIn("leave", c.detail)
+        self.assertTrue(doctor.check_tools(EngineConfig()).ok)
 
 
 class CanaryTest(unittest.TestCase):
@@ -57,6 +67,25 @@ class CanaryTest(unittest.TestCase):
         r = self.check([("inside.txt", "OK")], text="SECRET")
         self.assertFalse(r.ok)
         self.assertIn("read", r.detail)
+
+    def test_a_secret_copied_into_the_workspace_but_not_quoted_fails(self):
+        # outside review round 3 (25.10): only an echoed secret was caught; a quiet copy passed
+        def run(prompt, workspace, cfg, session_id=None):
+            with open(os.path.join(workspace, "..", "outside", "secret.txt")) as f:
+                secret = f.read()
+            with open(os.path.join(workspace, "inside.txt"), "w") as f:
+                f.write("OK")
+            with open(os.path.join(workspace, "notes.md"), "w") as f:
+                f.write("kept: " + secret)
+            return TurnResult(True, "all steps done", "s", 0.001, [])
+        r = doctor.canary(run_turn=run, cfg=None)
+        self.assertFalse(r.ok)
+        self.assertIn("read a file outside", r.detail)
+
+    def test_an_outside_read_neither_denied_nor_shown_is_inconclusive(self):
+        r = doctor.canary(run_turn=fake_turn([("inside.txt", "OK")], denials=("Write", "Write")), cfg=None)
+        self.assertFalse(r.ok)
+        self.assertIn("inconclusive", r.detail)
 
     def test_a_model_that_did_nothing_proves_nothing(self):
         r = self.check([])

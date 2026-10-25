@@ -400,8 +400,8 @@ def propose(report, private=False, min_sessions=1):
     for tool, items in umbrellas.items():
         name = f"{_slug(tool)}-pitfalls"
         sections = "".join(
-            f"\n## `{g['signature']}`\n\nSeen {g['count']} times. It went away after `{fix['fix_input']}` "
-            f"(via {fix['fixed_by']}). Do that before retrying `{fix['failed_input']}`.\n" for g, fix, _ in items)
+            f"\n## `{g['signature']}`\n\nSeen {g['count']} times. It went away after {_did(fix)}. "
+            f"Do that before retrying `{fix['failed_input']}`.\n" for g, fix, _ in items)
         draft = (f"---\nname: {name}\ndescription: Known {tool} pitfalls from real sessions and what fixed each. "
                  f"Use before running {tool} on a step that failed before.\n---\n\n# {tool} pitfalls\n" + sections)
         props.append({"kind": "skill", "title": f"{tool} pitfalls ({len(items)})",
@@ -414,15 +414,35 @@ def propose(report, private=False, min_sessions=1):
                       "evidence": f"{r['failed_tool']} failed with `{r['signature']}`, then {r['fixed_by']} worked",
                       "draft": f"- When {r['failed_tool']} fails with `{r['signature']}`: {r['fixed_by']} "
                                f"(`{r['fix_input']}`) worked instead."})
+    # the same correction is one lesson however often it came (three sessions used to give three proposals);
+    # in private mode every draft reads the same, so all corrections are one proposal
+    groups = OrderedDict()
     for c in report["corrections"]:
+        key = "private" if private else " ".join(c["correction"].lower().split())[:200]
+        groups.setdefault(key, []).append(c)
+    for cs in groups.values():
+        c, n, when = cs[0], len(cs), ", ".join(x["ts"] for x in cs)
         if private:
             # neither side's words: the assistant's claim often quotes the human
-            draft = (f"- A claim was corrected by the human ({c['ts']}). Re-read that exchange and write the rule in "
+            draft = (f"- A claim was corrected by the human ({when}). Re-read that exchange and write the rule in "
                      f"your own words; the check that would have caught it belongs at the point of action.")
         else:
             draft = f"- Claimed: \"{c['claim'][:160]}\" -> corrected: \"{c['correction'][:200]}\""
-        props.append({"kind": "memory", "title": "A claim the human corrected", "evidence": c["ts"], "draft": draft})
+        title = "A claim the human corrected" + (f" ({n} times)" if n > 1 else "")
+        props.append({"kind": "memory", "title": title, "evidence": when, "draft": draft})
     return props
+
+
+def _did(fix):
+    """What the fix was, as an action: a Read fix used to read 'after `/w/app.ts` (via Read)'."""
+    tool, what = fix["fixed_by"], fix["fix_input"]
+    if tool == "Read":
+        return f"reading `{what}` again"
+    if tool in ("Write", "Edit", "MultiEdit"):
+        return f"writing `{what}` with {tool}"
+    if tool in ("Bash", "PowerShell"):
+        return f"running `{what}`"
+    return f"`{what}` (via {tool})"
 
 
 def shown_not_lessons(report, private=False):

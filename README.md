@@ -221,7 +221,11 @@ description is skipped and logged; if the pull fails, the local copy is used.
 `--restricted`, its own empty folder, Read only). A `command` agent is an ordinary program you chose: herald only
 gives it an empty folder of its own and the same allow-listed environment as a Claude turn (no bot token, no
 `TYPESAFE_API_KEY`); a CLI that needs its own key names it in `"pass_env": ["ITS_KEY"]`. Treat a command agent as
-code you run yourself.
+code you run yourself. On Windows a `.cmd`/`.bat` target with `"prompt_arg": true` is refused at start: cmd.exe
+would read `&` or `>` in the prompt as commands. Point it at the real `.exe`, or send the prompt on stdin.
+
+`WebSearch` can be added to `"tools"`, but it is a way out: search queries leave your machine and can carry text the
+turn read in the workspace. `herald doctor` says so (WARN) whenever it is on.
 
 `/stop` and the daily cap are checked before every reply in a room, in Telegram and in the browser alike, not only
 when it starts; a stopped room says so and makes no summary. Its spend goes into the ledger reply by reply. The
@@ -270,7 +274,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-312 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+321 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
