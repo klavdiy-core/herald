@@ -102,6 +102,26 @@ class Moderator(unittest.TestCase):
         self.assertTrue(r.messages[-1]["held"])
 
 
+    def test_the_rephrase_retry_stays_inside_the_room_budget(self):
+        # an external review (25.10): reply_cap 0.60, price 0.60, budget 1.00, the judge sends the reply back ->
+        # one step() made two replies and spent 1.20
+        a = Voice("Raven", ["idiot", "a fine rephrase"], cost=0.60)
+        a.reply_cap = 0.60
+        r = room.Room("t", seats(a), fmt="brainstorm", judge=Judge(), budget_usd=1.00)
+        r.step()
+        self.assertLessEqual(r.spent, 1.00 + 1e-9)
+        self.assertEqual(len(a.prompts), 1)                    # no paid retry it could not afford
+        self.assertTrue(r.messages[-1]["held"])
+        self.assertNotIn("idiot", json.dumps(r.messages))
+
+    def test_the_retry_still_happens_when_it_fits(self):
+        a = Voice("Raven", ["idiot", "a fine rephrase"], cost=0.30)
+        a.reply_cap = 0.30
+        r = room.Room("t", seats(a), fmt="brainstorm", judge=Judge(), budget_usd=1.00)
+        r.step()
+        self.assertEqual(r.messages[-1]["text"], "a fine rephrase")
+
+
 class Levers(unittest.TestCase):
     def test_owner_words_go_into_the_room(self):
         a = Voice("Raven", ["x", "y"])

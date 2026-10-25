@@ -125,6 +125,11 @@ class Room:
         reply always went over it."""
         return max((float(getattr(s.agent, "reply_cap", 0) or 0) for s in self.seats), default=0.0)
 
+    def _fits(self):
+        """One more paid reply fits the budget (the same test for a first reply and a retry)."""
+        return self.budget is None or (self.spent < self.budget
+                                       and self.spent + self._reserve() <= self.budget + 1e-9)
+
     def step(self):
         """One reply. False when paused, closed or out of budget."""
         if self.paused or self.closed or self.halted:
@@ -134,8 +139,7 @@ class Room:
             self.halted = why
             self._emit("halted", reason=why, spent=round(self.spent, 4))
             return False
-        if self.budget is not None and (self.spent >= self.budget
-                                        or self.spent + self._reserve() > self.budget + 1e-9):
+        if not self._fits():
             if not self.over:
                 self.over = True
                 self._emit("budget", spent=round(self.spent, 4), budget=self.budget)
@@ -153,9 +157,14 @@ class Room:
         text, held = self._say(seat.agent, prompt), False
         if self.judge and self.judge.attack(text, self.topic) >= ATTACK:
             self._emit("moderated", speaker=seat.agent.name)
-            text = self._say(seat.agent, prompt + "\n\n" + REPHRASE)
-            if self.judge.attack(text, self.topic) >= ATTACK:
-                text, held = "(held back by the moderator)", True
+            if not self._fits():
+                # the retry is a paid reply too: it was not checked, and one step() spent 1.20 of a 1.00 budget
+                # (external review, 25.10). No room for it: the reply is held back, and said why
+                text, held = "(held back by the moderator; no budget left to rephrase)", True
+            else:
+                text = self._say(seat.agent, prompt + "\n\n" + REPHRASE)
+                if self.judge.attack(text, self.topic) >= ATTACK:
+                    text, held = "(held back by the moderator)", True
         m = {"speaker": seat.agent.name, "role": seat.role, "text": text, "round": self.rounds, "held": held}
         self.messages.append(m)
         self._emit("message", spent=round(self.spent, 4), **m)
