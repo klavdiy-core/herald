@@ -13,6 +13,7 @@ import subprocess
 ROLE = re.compile(r"^[\w\- ]{1,40}$")
 LISTED = re.compile(r"`([a-z0-9][a-z0-9._-]{0,63})`")
 FRONT = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
+BARE = re.compile(r"[a-z0-9][a-z0-9._]*-[a-z0-9._-]+(?=[\s:·,]|$)")   # «anime-by-code ·» without backticks
 
 
 def pull(repo, timeout_s=30):
@@ -45,9 +46,19 @@ def for_role(repo, role):
     path = os.path.join(roles_dir, f"{role}.md")
     if not os.path.isfile(path):
         return [], []                                   # a role without a file simply has no team skills
+    names, warnings = [], []
     with open(path, encoding="utf-8") as f:
-        names = [m.group(1) for line in f if line.lstrip().startswith("-") for m in [LISTED.search(line)] if m]
-    skills, warnings = [], []
+        for n, line in enumerate(f, 1):
+            if not line.lstrip().startswith("- "):          # list lines only; a «---» rule is not one
+                continue
+            m = LISTED.search(line)
+            if m:
+                names.append(m.group(1))
+            elif BARE.match(line.lstrip()[2:]):            # starts like a skill name, a note line does not
+                # a skill written without backticks used to drop out in silence (Filin got 4 of 6, 25.10)
+                warnings.append(f"roles/{role}.md line {n}: no `name` in backticks, not picked up: "
+                                f"{line.strip()[:80]}")
+    skills = []
     for name in dict.fromkeys(names):
         sk = os.path.join(repo, "skills", name, "SKILL.md")
         meta = _front(sk) if os.path.isfile(sk) else None

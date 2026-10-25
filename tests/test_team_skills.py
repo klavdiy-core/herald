@@ -56,6 +56,19 @@ class Pickup(unittest.TestCase):
         self.assertTrue(any("broken-one" in w for w in warnings))
         self.assertTrue(any("no-such-skill" in w for w in warnings))
 
+    def test_a_role_line_without_backticks_is_warned_not_dropped_in_silence(self):
+        # Sokol 25.10 (tasks/2026-10-25_herald-silent-skip.md): Filin got 4 of 6 skills, warnings = []
+        with open(os.path.join(self.repo, "roles", "Filin.md"), "w", encoding="utf-8") as f:
+            f.write("# Filin\n\n- `witness-numbers` · why\n- anime-by-code · no backticks\n"
+                    "- explain-hard: also none\n\n---\nnot a list line\n")
+        skills, warnings = team_skills.for_role(self.repo, "Filin")
+        self.assertEqual([s["name"] for s in skills], ["witness-numbers"])
+        joined = " | ".join(warnings)
+        self.assertIn("line 4", joined)
+        self.assertIn("anime-by-code", joined)
+        self.assertIn("line 5", joined)
+        self.assertEqual(sum("no `name`" in w for w in warnings), 2)       # the --- rule is not a list line
+
     def test_a_role_without_a_file_has_no_skills_and_does_not_fail(self):
         self.assertEqual(team_skills.for_role(self.repo, "Nobody")[0], [])
         self.assertEqual(team_skills.for_role(os.path.join(self.tmp.name, "no-repo"), "Voron")[0], [])

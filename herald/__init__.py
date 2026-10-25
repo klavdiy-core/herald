@@ -1,2 +1,2 @@
 """herald: a strict harness that gives Claude Code a voice."""
-__version__ = "0.22.0"
+__version__ = "0.22.1"
