@@ -1,7 +1,7 @@
 """The daemon: Telegram in, one confined Claude Code turn, text (and maybe voice) out; plus speaking first.
 
 Two roots: `control/` (config, state, STOP, never given to the model) and `workspace/` (the model's cwd).
-Owner commands: /stop /resume /new /voice off|voice|both /status; learning: /learn /approve /drop /memory /forget.
+Owner commands: /stop /resume /new /voice off|voice|both /status /usage /retry; learning: /learn /approve /drop /memory /forget.
 """
 import dataclasses
 import inspect
@@ -25,7 +25,7 @@ VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
 SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
 HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
 VOICE_IN = "[voice message, transcribed]\n{}"
-HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /model NAME|default\n"
+HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /usage · /retry · /model NAME|default\n"
         "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
 NUDGE_STEPS = 8            # a turn this long probably taught something (Hermes nudges after 5+ tool calls)
 NUDGE_EVERY = 5
@@ -142,6 +142,7 @@ class Herald:
         self.skills_toc = team_skills.setup(skills_repo, skills_role, workspace, log=self._log)
         # updates that arrived while a turn ran (the watcher collects them; /stop is acted on at once)
         self._pending, self._pending_offset, self._batch_end = [], None, None
+        self._last_prompt = None
 
     def _abortable(self):
         """Can this engine be told to stop mid-turn? (looked up at each turn: the engine can be swapped)"""
@@ -193,6 +194,19 @@ class Herald:
     def _today(self):
         """(dollars, turns) spent today, from the ledger."""
         return spent_today(self.costs_path)
+
+    def _usage(self, days=7):
+        """Today against the cap, then the last days: dollars, turns, and how many costs are estimates."""
+        rows = spent_by_day(self.costs_path, days)
+        if not rows:
+            return "Nothing spent yet: the ledger (control/costs.jsonl) is empty."
+        today = time.strftime("%Y-%m-%d")
+        usd, n, est = next(((u, k, e) for d, u, k, e in rows if d == today), (0.0, 0, 0))
+        cap = f" of ${self.max_usd_per_day:.2f}" if self.max_usd_per_day is not None else " (no daily cap set)"
+        lines = [f"today ${usd:.2f}{cap}, {n} turns" + (f", {est} estimated (killed turns counted at their cap)"
+                                                          if est else "")]
+        lines += [f"{d}  ${u:.2f}  {k} turns" + (f"  ({e} estimated)" if e else "") for d, u, k, e in rows if d != today]
+        return "\n".join(lines)
 
     def _over_budget(self, extra=0.0):
         """extra: money spent but not in the ledger yet (a room that is still talking)."""
@@ -324,6 +338,7 @@ class Herald:
         except telegram.TelegramError as e:
             self._log(f"typing signal not sent ({e})")
         prompt = _forwarded(t) if m.forwarded else (VOICE_IN.format(t) if heard is not None else t)
+        self._last_prompt = prompt                      # for /retry; kept in memory only, never written to disk
         try:
             r = self._turn(prompt)
         except Exception:                               # anything outside claude itself: the owner hears it failed
@@ -577,6 +592,16 @@ class Herald:
         elif cmd == "/voice" and arg.strip() in ("off", "voice", "both"):
             self._save(voice=arg.strip())
             self.bot.send_text(chat_id, f"Voice: {arg.strip()}.")
+        elif cmd == "/usage":
+            self.bot.send_text(chat_id, self._usage())
+        elif cmd == "/retry":
+            if not self._last_prompt:
+                return self.bot.send_text(chat_id, "Nothing to retry yet (nothing asked since herald started).")
+            if os.path.exists(self.stop_path) or self._over_budget():
+                return self.bot.send_text(chat_id, "No turn now (stopped or over today's budget).")
+            r = self._turn(self._last_prompt)
+            self._log(f"retry ok={r.ok} cost={r.cost_usd}")
+            self._answer(chat_id, r)
         elif cmd == "/status":
             s, (ok, why) = self._state(), self.gate.may_speak()
             usd, n = self._today()
@@ -653,6 +678,26 @@ def room_agents(cfg, claude_cmd=None):
             raise ValueError(f"two agents are named {a.name}")
         out[a.name] = a
     return out
+
+
+def spent_by_day(costs_path, days=7):
+    """[(day, dollars, turns, estimated)] for the last `days` days that have rows, newest first; damaged rows skipped."""
+    first = time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
+    per = {}
+    if os.path.exists(costs_path):
+        with open(costs_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    day = str(row["day"])
+                    usd = float(row.get("usd") or 0)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    continue
+                if day < first:
+                    continue
+                u, n, e = per.get(day, (0.0, 0, 0))
+                per[day] = (u + usd, n + 1, e + (1 if row.get("estimated") else 0))
+    return [(d, *per[d]) for d in sorted(per, reverse=True)]
 
 
 def spent_today(costs_path):
