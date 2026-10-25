@@ -73,6 +73,12 @@ class NotTooPrivate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             rep = learning.analyze(t.write(d))
         self.assertIn("ivana", rep["typed"])                   # a name inside a sentence is masked
+        t2 = Transcript()                                      # tool names written by a human are not private
+        t2.user("then Read the File again and Edit it in PowerShell", T(0))
+        with tempfile.TemporaryDirectory() as d2:
+            typed = learning.analyze(t2.write(d2))["typed"]
+        for w in ("read", "file", "edit", "powershell"):
+            self.assertNotIn(w, typed)
         md = learning.render_md(learning.propose(rep, private=True))
         self.assertIn("String to replace not found", md)
 
@@ -119,7 +125,7 @@ class Telegram(unittest.TestCase):
         gate = speak_first.Gate(speak_first.Limits(enabled=False), os.path.join(self.control, "s.json"),
                                 os.path.join(self.control, "STOP"))
         self.h = run.Herald(self.bot, Engine(), EngineConfig(append_system_prompt_file=persona), gate, [], self.control, self.workspace, {OWNER},
-                            transcript_roots=[self.root])
+                            transcript_roots=[self.root], learn_min_sessions=1)
 
     def tearDown(self):
         self.tmp.cleanup()

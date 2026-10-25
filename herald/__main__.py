@@ -20,6 +20,7 @@ def main(argv=None):
     ap.add_argument("--text", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--private", action="store_true", help="learn: keep mechanics, drop every quoted message")
+    ap.add_argument("--min-sessions", type=int, default=2, help="learn: a lesson must happen in this many sessions")
     ap.add_argument("--ignore", default="", help="learn: regex for outputs that are signals, not failures")
     ap.add_argument("--since-hours", type=float, default=None, help="team: only sessions touched in this window")
     a = ap.parse_args(argv)
@@ -40,8 +41,15 @@ def main(argv=None):
     if a.cmd == "learn":                         # works on any Claude Code transcript, no config needed
         if not a.transcript:
             ap.error("learn needs a transcript path")
-        md = learning.render_md(learning.propose(learning.analyze(a.transcript, a.ignore or None), a.private),
-                                source=os.path.basename(a.transcript))
+        # a transcript or a folder of them; a lesson must happen in --min-sessions different sessions (default 2)
+        paths = ([os.path.join(a.transcript, n) for n in sorted(os.listdir(a.transcript)) if n.endswith(".jsonl")]
+                 if os.path.isdir(a.transcript) else [a.transcript])
+        if not paths:
+            raise FileNotFoundError(f"no .jsonl transcripts in {a.transcript}")
+        rep = learning.analyze_many(paths, a.ignore or None)
+        md = learning.render_md(learning.propose(rep, a.private, a.min_sessions),
+                                source=f"{os.path.basename(os.path.normpath(a.transcript))}, {len(paths)} session(s)",
+                                not_lessons=learning.shown_not_lessons(rep, a.private))
         if a.out:
             with open(a.out, "w", encoding="utf-8") as f:
                 f.write(md)

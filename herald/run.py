@@ -116,7 +116,7 @@ class Herald:
     def __init__(self, bot, run_turn, engine_cfg, gate, jobs, control, workspace, owners, synth=None,
                  hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
                  max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
-                 room_sync=False, decision_ttl_s=24 * 3600, now=time.time):
+                 room_sync=False, decision_ttl_s=24 * 3600, now=time.time, learn_min_sessions=2):
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -131,6 +131,7 @@ class Herald:
         self.room_roles, self.room_sync, self.room_busy = room_roles or {}, room_sync, False
         self.decisions = decisions.Decisions(os.path.join(control, "decisions.json"), now, decision_ttl_s)
         self.live_rooms = {}                            # decision id -> the Room its summary buttons belong to
+        self.learn_min_sessions = learn_min_sessions    # a lesson must happen in this many different sessions
 
     # ---------- state ----------
     def _state(self):
@@ -333,7 +334,11 @@ class Herald:
         path = notebook.find_transcript(self.workspace, sid, self.roots) if sid else None
         if not path:
             return self.bot.send_text(chat_id, "Nothing to learn yet: no session transcript found.")
-        props = [p for p in learning.propose(learning.analyze(path)) if not self.nb.knows(p)]
+        # a lesson is what happened in at least two different sessions of this workspace, and a cause, not a neighbour
+        folder = os.path.dirname(path)
+        paths = sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".jsonl"))
+        report = learning.analyze_many(paths)
+        props = [p for p in learning.propose(report, min_sessions=self.learn_min_sessions) if not self.nb.knows(p)]
         self.nb.set_pending(props)
         if not props:
             return self.bot.send_text(chat_id, "Nothing new: nothing repeated or corrected that is not learned already.")

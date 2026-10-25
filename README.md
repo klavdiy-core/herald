@@ -104,6 +104,20 @@ approved memory and skills in its system prompt. `/memory` shows what it keeps, 
 `/forget skill-name` takes a skill out (it is archived, not deleted). The store lives in `control/learned/`, where the model cannot write:
 it learns nothing you did not approve. After a long turn it reminds you once: "/learn to keep what worked".
 
+**A lesson is a cause, not a neighbour.** A step that merely came after a failure is not proposed as its fix.
+Each candidate is judged:
+- a **cause**: the fix touched what failed (read or rewrote the same file, installed the missing module, ran the same
+  code from a file instead of an inline `-c` string);
+- a **coincidence**: a neighbouring step that touched nothing the failure was about ("the error went away after `cd`"),
+  or just another attempt;
+- a **bypass**: going around a check (Edit says the text is not there and the shell rewrites the file anyway; a gate
+  passes only with `-SkipGate`). Never a lesson; the right move is shown (read the file again; fix what the check says).
+
+Coincidences and bypasses are listed apart under "Not lessons", so nobody learns them by mistake. And a lesson must
+happen in at least two different sessions (`learn_min_sessions` / `--min-sessions`, default 2): one bad afternoon is
+not a habit. Checked on a real team's sessions: "internal went away after cd" lands as a coincidence and "Edit could
+not find the string, so PowerShell appended to the file" as a bypass.
+
 The analysis is plain code, no model. On real sessions it ignores what is not a mistake: red test runs done on
 purpose, a failing test fixed by editing code (that is the job), text injected by skills, long briefs that happen to
 say "again". A skill is one per tool ("Bash pitfalls"), never one per error message.
@@ -111,7 +125,7 @@ say "again". A skill is one per tool ("Bash pitfalls"), never one per error mess
 It works on any Claude Code transcript too, without Telegram:
 
 ```sh
-python -m herald learn ~/.claude/projects/<project>/<session>.jsonl --private --out proposals.md
+python -m herald learn ~/.claude/projects/<project>/ --private --out proposals.md   # a folder of sessions, or one
 ```
 
 `--private` keeps only the mechanics (tools, error lines, what fixed them) and drops every quoted message; words the
@@ -247,7 +261,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-257 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+273 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

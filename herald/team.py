@@ -38,22 +38,24 @@ def title(path):
 
 def _merge(reports):
     groups = OrderedDict()
-    out = {"repeated_errors": [], "recoveries": [], "corrections": [],
+    out = {"repeated_errors": [], "recoveries": [], "corrections": [], "not_lessons": [],
            "typed": sorted({w for r in reports for w in r.get("typed", [])})}
     for r in reports:
         for g in r["repeated_errors"]:
-            m = groups.setdefault(g["signature"], dict(g, count=0, tools=[]))
+            m = groups.setdefault(g["signature"], dict(g, count=0, tools=[], sessions=[]))
             m["count"] += g["count"]
+            m["sessions"] = sorted(set(m["sessions"]) | set(g.get("sessions", [])))
             m["tools"] = sorted(set(m["tools"]) | set(g["tools"]))
             m["first"], m["last"] = min(m["first"], g["first"]), max(m["last"], g["last"])
         out["recoveries"] += r["recoveries"]
         out["corrections"] += r["corrections"]
+        out["not_lessons"] += r.get("not_lessons", [])
     out["all_errors"] = list(groups.values())
     out["repeated_errors"] = [g for g in groups.values() if g["count"] >= 2]
     return out
 
 
-def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None):
+def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None, min_sessions=2):
     cutoff = time.time() - since_hours * 3600 if since_hours else 0
     by_role = OrderedDict()
     for name in sorted(os.listdir(projects_dir)):
@@ -83,9 +85,10 @@ def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None):
         for r in rep["recoveries"]:
             fixes.setdefault(show(r["signature"]), (learning._scrub(learning._short(r["fix_input"], private), typed),
                                                     role))
-        props = learning.propose(rep, private=private)
+        props = learning.propose(rep, private=private, min_sessions=min_sessions)
         with open(os.path.join(out_dir, f"{safe(role)}.md"), "w", encoding="utf-8") as f:
-            f.write(learning.render_md(props, source=f"{role}, {len(by_role[role])} session(s)"))
+            f.write(learning.render_md(props, source=f"{role}, {len(by_role[role])} session(s)",
+                                       not_lessons=learning.shown_not_lessons(rep, private)))
         res["roles"][role] = {"sessions": len(by_role[role]), "proposals": len(props)}
     shared = sorted(((s, r) for s, r in seen.items() if len(r) >= 2), key=lambda x: -sum(x[1].values()))
     lines = ["# Team learning", "", "| role | sessions | proposals |", "|---|---|---|"]

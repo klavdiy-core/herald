@@ -28,6 +28,8 @@ class Engine:
 
 
 class Loop(unittest.TestCase):
+    min_sessions = 1                # these fixtures have one session; the strict default is tested below
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
@@ -53,7 +55,7 @@ class Loop(unittest.TestCase):
         return run.Herald(bot=self.bot, run_turn=self.engine,
                           engine_cfg=EngineConfig(append_system_prompt_file=self.persona), gate=gate, jobs=[],
                           control=self.control, workspace=self.workspace, owners={OWNER},
-                          transcript_roots=[self.root])
+                          transcript_roots=[self.root], learn_min_sessions=self.min_sessions)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -120,6 +122,30 @@ class Loop(unittest.TestCase):
         self.engine.num_turns = 1
         self.h.handle(text("short"))
         self.assertNotIn("/learn", self.last())
+
+
+class TwoSessions(Loop):
+    """The default: a lesson must happen in two different sessions of this workspace."""
+    min_sessions = 2
+
+    def test_one_session_teaches_nothing_yet(self):
+        self.h.handle(text("build the report"))
+        self.h.handle(text("/learn"))
+        self.assertNotIn("bash-pitfalls", self.last())
+
+    def test_the_same_mistake_in_a_second_session_becomes_a_lesson(self):
+        proj = os.path.join(self.root, "projects", notebook.mangle(self.workspace))
+        planted().write(proj)
+        os.replace(os.path.join(proj, "s.jsonl"), os.path.join(proj, "sess-0.jsonl"))
+        self.h.handle(text("build the report"))
+        self.h.handle(text("/learn"))
+        self.assertIn("bash-pitfalls", self.last())
+
+    # the inherited single-session tests do not apply under this threshold
+    test_learn_lists_numbered_proposals_from_the_current_session = None
+    test_an_approved_skill_reaches_the_next_turn_and_the_persona_stays = None
+    test_approved_memory_reaches_the_next_turn_and_forget_removes_it = None
+    test_drop_and_a_wrong_number = None
 
 
 class Store(unittest.TestCase):

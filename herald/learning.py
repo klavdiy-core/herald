@@ -9,6 +9,7 @@ by reading the transcript, without a model: deterministic, checkable, and nothin
   render_md(proposals) -> a Markdown page to read and approve by hand.
 """
 import json
+import os
 import re
 from collections import OrderedDict
 
@@ -31,8 +32,21 @@ RECOVERY_WINDOW = 6
 EXPECTED = re.compile(r"\bred\b|expect\w* (red|fail)|mutant|mutation|planted|красн|должен упасть", re.I)
 MAX_CORRECTION_CHARS = 500
 EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+# words a human writes with a capital that are not private: tool names and words error lines are made of (masking
+# them turned "String to replace not found in file" into "... in <typed>" on a real team run)
+NOT_PRIVATE = {"read", "write", "edit", "bash", "powershell", "grep", "glob", "file", "files", "folder", "string",
+               "error", "errors", "python", "node", "claude", "code", "test", "tests", "since", "found", "replace",
+               "line", "path", "true", "false", "none", "null", "json", "http", "https", "html", "readme", "telegram",
+               "github", "windows", "linux", "chrome", "this", "that", "then", "when", "what", "where", "with",
+               "from", "into", "have", "make", "done", "same", "again", "after", "before"}
+SKIP = re.compile(r"-SkipGate\b|--no-verify\b|--skip[-\w]*|--no-gpg-sign\b|\bskip[_-]?gate\b", re.I)
+INLINE = re.compile(r"(?:^|\s)-[ce]\s+[\"']")         # python -c "...", node -e '...'
+GENERIC = {"error", "errors", "failed", "module", "named", "found", "file", "line", "true", "false", "exception",
+           "string", "replace", "tool_use_error", "traceback", "cannot", "invalid", "detected", "most", "recent",
+           "call", "last", "exit", "code"}
 WITHHELD = "(output without an error line)"
-WRITES = re.compile(r"<<|(?<![0-9&])>>?(?!&)\s*[\w./\\$\"']|Set-Content|Out-File|Add-Content|\btee\b|WriteAllText", re.I)
+WRITES = re.compile(r"<<|(?<![0-9&])>>?(?!&)\s*[\w./\\$\"']|Set-Content|Out-File|Add-Content|\btee\b|"
+                    r"(Write|Append)All(Text|Lines|Bytes)|Copy-Item|Move-Item|\bcp\s|\bmv\s", re.I)
 
 
 def _identity(tool, inp):
@@ -90,7 +104,7 @@ def _private_words(text):
     out, prev = set(), "."
     for m in re.finditer(r"[^\W_]+|[^\w\s]", text):
         w = m.group(0)
-        if len(w) >= 4 and w[0].isalnum():
+        if len(w) >= 4 and w[0].isalnum() and w.lower() not in NOT_PRIVATE:
             if (any(c.isdigit() for c in w) or (w.isupper() and w.isalpha()) or any(c.isupper() for c in w[1:])
                     or (w[0].isupper() and prev not in ".!?:")):
                 out.add(w)
@@ -168,37 +182,54 @@ def analyze(path, ignore=None, min_repeat=2):
                 g["examples"].append(_head(c["input"]))
     repeated = [g for g in groups.values() if g["count"] >= min_repeat and g["signature"]]
 
-    # a recovery: step X failed, later the same step X succeeded -> what happened in between is the fix.
-    # Nothing in between = a transient failure (Hermes: do not capture). Fallback: another tool succeeded on the same
-    # file (a heredoc kept failing, the Write tool did it).
-    recoveries, seen = [], set()
+    # a recovery: step X failed, later the same step X succeeded -> what happened in between is the candidate fix.
+    # Nothing in between = a transient failure (Hermes: do not capture). Other shapes: inline code (-c) that worked
+    # from a file; another tool that succeeded on the same file. Every candidate is then judged: a cause, a
+    # coincidence (a neighbouring step that touched nothing the failure was about) or a bypass (going around a check).
+    recoveries, not_lessons, seen = [], [], set()
+    session = os.path.splitext(os.path.basename(path))[0]
     for i, c in enumerate(calls):
         if c["ok"] or c["expected"]:
             continue
-        ident = _identity(c["tool"], c["input"])
+        ident, head = _identity(c["tool"], c["input"]), _head(c["input"], 400)
         window = calls[i + 1:i + 1 + RECOVERY_WINDOW]
-        fix = None
+        fix, how = None, None
         for k, nxt in enumerate(window):
             if nxt["ok"] and _identity(nxt["tool"], nxt["input"]) == ident:
+                if SKIP.search(_head(nxt["input"], 400)) and not SKIP.search(head):
+                    fix, how = nxt, "skip"            # the same step passed only because its check was switched off
+                    break
                 between = [b for b in window[:k] if b["ok"]]
-                fix = between[0] if between else None
+                fix, how = (between[0] if between else None), "between"
                 if fix and fix["tool"] in EDITS:      # fail, edit the code, pass: that is the job, not a lesson
                     fix = None
                 break
         else:
-            tokens = set(re.findall(r"[\w.-]+\.\w{1,5}", _head(c["input"], 400)))
-            fix = next((n for n in window if n["ok"] and n["tool"] != c["tool"]
-                        and tokens & set(re.findall(r"[\w.-]+\.\w{1,5}", _head(n["input"], 400)))), None)
-            # an edit after a failed run is fixing the code; it is "instead" only if the shell was writing that file
-            if fix and fix["tool"] in EDITS and not WRITES.search(_head(c["input"], 400)):
-                fix = None
+            prog = _program(c)
+            if prog and INLINE.search(head):          # inline code broke in the shell; the same program ran a file
+                fix = next((n for n in window if n["ok"] and _program(n) == prog
+                            and not INLINE.search(_head(n["input"], 400))), None)
+                how = "changed"
+            if fix is None:
+                tokens = _files(head)
+                fix = next((n for n in window if n["ok"] and n["tool"] != c["tool"]
+                            and tokens & _files(_head(n["input"], 400))), None)
+                how = "instead"
+                # an edit after a failed run is fixing the code; "instead" only if the shell was writing that file
+                if fix and fix["tool"] in EDITS and not WRITES.search(head):
+                    fix = None
         if fix is None:
             continue
-        key = (signature(c["text"]), fix["tool"], _head(fix["input"]))
-        if key not in seen:
+        sig = signature(c["text"])
+        why, right = _judge(c, fix, how, sig)
+        entry = {"signature": sig, "failed_tool": c["tool"], "failed_input": _head(c["input"]),
+                 "fixed_by": fix["tool"], "fix_input": _head(fix["input"]), "ts": fix["ts"], "session": session}
+        key = (sig, fix["tool"], _head(fix["input"]))
+        if why != "cause":
+            not_lessons.append(dict(entry, why=why, right_move=right))
+        elif key not in seen:
             seen.add(key)
-            recoveries.append({"signature": key[0], "failed_tool": c["tool"], "failed_input": _head(c["input"]),
-                               "fixed_by": fix["tool"], "fix_input": _head(fix["input"]), "ts": fix["ts"]})
+            recoveries.append(entry)
 
     corrections, last_say = [], None
     for e in ev:
@@ -212,8 +243,90 @@ def analyze(path, ignore=None, min_repeat=2):
             last_say = None
     # words the human typed that could be private: in private mode they are masked wherever they turn up
     typed = sorted({w.lower() for e in ev if e["kind"] == "human" for w in _private_words(e["text"])})
+    for g in repeated:
+        g["sessions"] = [session]
     return {"repeated_errors": repeated, "recoveries": recoveries, "corrections": corrections, "typed": typed,
-            "calls": len(calls), "failed_calls": sum(1 for c in calls if not c["ok"])}
+            "not_lessons": not_lessons, "calls": len(calls), "failed_calls": sum(1 for c in calls if not c["ok"])}
+
+
+def analyze_many(paths, ignore=None):
+    """One report over several sessions; each lesson knows in how many different sessions it happened."""
+    groups, out = OrderedDict(), {"recoveries": [], "corrections": [], "not_lessons": [], "typed": set(),
+                                  "calls": 0, "failed_calls": 0}
+    for p in paths:
+        r = analyze(p, ignore, min_repeat=1)
+        for g in r["repeated_errors"]:
+            m = groups.setdefault(g["signature"], dict(g, count=0, tools=[], sessions=[]))
+            m["count"] += g["count"]
+            m["tools"] = sorted(set(m["tools"]) | set(g["tools"]))
+            m["sessions"] = sorted(set(m["sessions"]) | set(g["sessions"]))
+            m["first"], m["last"] = min(m["first"], g["first"]), max(m["last"], g["last"])
+        for k in ("recoveries", "corrections", "not_lessons"):
+            out[k] += r[k]
+        out["typed"] |= set(r["typed"])
+        out["calls"] += r["calls"]
+        out["failed_calls"] += r["failed_calls"]
+    out["repeated_errors"] = [g for g in groups.values() if g["count"] >= 2]
+    out["typed"] = sorted(out["typed"])
+    return out
+
+
+def _program(call):
+    """The program a shell call runs (python, node, git...), else None."""
+    if call["tool"] not in ("Bash", "PowerShell"):
+        return None
+    words = str(call["input"].get("command", "")).replace("&", " ").split()
+    return os.path.basename(words[0]).lower().removesuffix(".exe") if words else None
+
+
+def _files(text):
+    return {m.lower() for m in re.findall(r"[\w.-]+\.\w{1,5}", text)}
+
+
+def _judge(failed, fix, how, sig):
+    """('cause' | 'coincidence' | 'bypass', the right move when it is not a cause)."""
+    fix_in = _head(fix["input"], 400)
+    if how == "skip" or (SKIP.search(fix_in) and not SKIP.search(_head(failed["input"], 400))):
+        return "bypass", "fix what the check reports; never switch the check off"
+    if failed["tool"] in EDITS and fix["tool"] in ("Bash", "PowerShell") and how == "instead" \
+            and _action(fix) == "write":                  # the shell rewrote the file around Edit's check
+        return "bypass", "Read the file again (it changed since it was read), then Edit"
+    if how == "changed":
+        return "cause", ""
+    shared = bool(_files(_head(failed["input"], 400)) & _files(fix_in))
+    words = {w.lower() for w in re.findall(r"[A-Za-z][\w-]{3,}", sig)} - GENERIC
+    about_error = any(w in fix_in.lower() for w in words)
+    act_failed, act_fix = _action(failed), _action(fix)
+    if how == "instead":
+        # another tool did the same thing to the same file (a heredoc kept failing, Write wrote it): a cause.
+        # Another tool merely looking at the file is a neighbouring step.
+        if shared and act_failed == act_fix:
+            return "cause", ""
+    elif act_fix in ("read", "write", "install") and (shared or about_error):
+        return "cause", ""                    # read the file again, install the missing module, ...
+    return "coincidence", "find what really changed; a neighbouring step is not a fix"
+
+
+READS = re.compile(r"^\s*(cat|head|tail|less|more|type|get-content|gc|select-string|sls|grep|rg|ls|dir|"
+                   r"get-childitem|test-path|stat|wc)\b", re.I)
+INSTALLS = re.compile(r"\b(pip3?|uv|npm|pnpm|yarn|choco|winget|apt(-get)?|brew)\s+(install|add|i)\b", re.I)
+
+
+def _action(call):
+    """What a step does: write, read, install or run."""
+    if call["tool"] in EDITS:
+        return "write"
+    if call["tool"] in ("Read", "Grep", "Glob"):
+        return "read"
+    cmd = str(call["input"].get("command", ""))
+    last = re.split(r"[;&|]+", cmd)[-1] if cmd else ""
+    if INSTALLS.search(cmd):
+        return "install"
+    if WRITES.search(cmd):
+        return "write"
+    if READS.search(last) or READS.search(cmd):
+        return "read"
+    return "run"
 
 
 def _slug(text):
@@ -242,7 +355,20 @@ def _scrub(s, typed):
     return rx.sub("<typed>", s)
 
 
-def propose(report, private=False):
+def _across(recoveries, n):
+    """One recovery per (error, fix) that happened in at least n different sessions."""
+    groups = OrderedDict()
+    for r in recoveries:
+        g = groups.setdefault((r["signature"], r["fixed_by"], r["fix_input"]), {"first": r, "sessions": set()})
+        g["sessions"].add(r.get("session"))
+    return [g["first"] for g in groups.values() if len(g["sessions"]) >= n]
+
+
+def propose(report, private=False, min_sessions=1):
+    if min_sessions > 1:                  # a lesson is what keeps happening, not what happened once
+        report = dict(report, recoveries=_across(report["recoveries"], min_sessions),
+                      repeated_errors=[g for g in report["repeated_errors"]
+                                       if len(g.get("sessions", [])) >= min_sessions])
     if private:
         # a withheld output teaches nothing readable: it is dropped, not shown as a blank lesson
         # and every word the human typed is masked: an error line or a command can echo it
@@ -299,7 +425,16 @@ def propose(report, private=False):
     return props
 
 
-def render_md(props, source=""):
+def shown_not_lessons(report, private=False):
+    """The coincidences and bypasses, safe to show: in private mode error lines and commands are masked as in
+    proposals, and an output without an error line is dropped."""
+    typed = report.get("typed", []) if private else []
+    return [dict(n, signature=_scrub(redact(n["signature"], private), typed),
+                 fix_input=_scrub(_short(n["fix_input"], private), typed))
+            for n in report.get("not_lessons", []) if redact(n["signature"], private) != WITHHELD]
+
+
+def render_md(props, source="", not_lessons=None):
     out = ["# Learning proposals", ""]
     if source:
         out += [f"From: {source}. Nothing here is applied by itself: read, then approve or drop.", ""]
@@ -307,4 +442,13 @@ def render_md(props, source=""):
         out += [f"## {i}. [{p['kind']}] {p['title']}", "", f"Evidence: {p['evidence']}", "", "```", p["draft"], "```", ""]
     if not props:
         out.append("Nothing repeated, nothing was corrected.")
+    if not_lessons:
+        out += ["", "## Not lessons", "", "Looked like a fix, but was not one; kept here so nobody learns it by mistake.", ""]
+        seen = set()
+        for n in not_lessons:
+            key = (n["signature"], n["why"], n["fixed_by"])
+            if key not in seen:
+                seen.add(key)
+                out.append(f"- **{n['why']}**: after `{n['signature'][:90]}`, {n['fixed_by']} `{n['fix_input'][:60]}` "
+                           f"only followed it. Right move: {n['right_move']}.")
     return "\n".join(out) + "\n"

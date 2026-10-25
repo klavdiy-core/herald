@@ -62,7 +62,9 @@ class Team(unittest.TestCase):
 
     def test_sessions_of_one_role_are_counted_together(self):
         self.assertEqual(self.res["roles"]["Builder"]["sessions"], 2)
-        self.assertIn("yaml", self.read("Builder.md"))
+        builder = self.read("Builder.md")
+        self.assertIn("String to replace not found", builder)    # in both Builder sessions: a lesson
+        self.assertNotIn("yaml", builder)                         # in one session only: not yet
 
     def test_an_error_two_roles_share_is_a_team_lesson(self):
         idx = self.read("INDEX.md")
