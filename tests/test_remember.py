@@ -8,12 +8,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 from herald import run  # noqa: E402
-from herald.telegram import Message  # noqa: E402
-from test_run import OWNER, Base, text  # noqa: E402
-
-
-def tap(data, uid=50):
-    return Message(uid, OWNER, "callback", text=data, callback_id=f"cb{uid}")
+from test_buttons import tap  # noqa: E402
+from test_run import Base, text  # noqa: E402
 
 
 class Remember(Base):
