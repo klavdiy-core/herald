@@ -94,6 +94,56 @@ class TelegramHiccups(Base):
         self.assertTrue(self.bot.texts)
 
 
+class DecisionsFromTwoThreads(unittest.TestCase):
+    def test_offers_from_several_threads_are_all_kept(self):
+        import threading
+        import time as _time
+        from herald import decisions
+        with tempfile.TemporaryDirectory() as d:
+            store = decisions.Decisions(os.path.join(d, "decisions.json"), now=_time.time)
+            ids, errors = [], []
+
+            def offer_many():
+                for _ in range(25):
+                    try:
+                        ids.append(store.offer("x", ["A", "B"]))
+                    except Exception as e:             # a race on the shared .tmp raised here
+                        errors.append(e)
+            threads = [threading.Thread(target=offer_many) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(len(store._load()), 150)
+
+    def test_old_closed_decisions_are_dropped(self):
+        from herald import decisions
+        clock = [1000.0]
+        with tempfile.TemporaryDirectory() as d:
+            store = decisions.Decisions(os.path.join(d, "decisions.json"), now=lambda: clock[0], ttl_s=60)
+            old = store.offer("old", ["A"])
+            store.tap(old, 0)
+            clock[0] += 8 * 24 * 3600                      # a week and a day later
+            store.offer("new", ["A"])
+            self.assertNotIn(old, store._load())
+
+
+class HaltedWebRoom(unittest.TestCase):
+    def test_a_room_halted_by_stop_ends_its_thread(self):
+        # its thread used to loop every pace_s until someone clicked "end"
+        import time as _time
+        from herald import room_web
+        from test_room import Voice
+        voices = {"Raven": Voice("Raven", [f"raven {i}" for i in range(20)], cost=0.001)}
+        with tempfile.TemporaryDirectory() as d:
+            state = room_web.State(voices, d, None, 0.01, should_stop=lambda: "stop")
+            state.start({"topic": "x", "format": "brainstorm", "seats": [{"name": "Raven", "role": "ideas"}]})
+            state.thread.join(timeout=3)
+            self.assertFalse(state.thread.is_alive())
+            self.assertEqual(state.room.halted, "stop")
+
+
 class FakeRoom:
     def __init__(self):
         self.topic, self.halted, self.spent, self.messages, self.ended = "x", None, 0.0, [], False

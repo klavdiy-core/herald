@@ -3,9 +3,22 @@
 Kept in control/decisions.json so a tap still works after a restart. A decision expires after its TTL whether it
 was postponed or simply left; an expired one is reported once (one line, the buttons are not pushed again).
 """
+import functools
 import json
 import os
 import secrets
+import threading
+
+KEEP_CLOSED_S = 7 * 24 * 3600      # a done or expired decision is kept a week (a late tap still says "already"), then dropped
+
+
+def _locked(fn):
+    """Load-change-save as one step: the /room thread and the poll thread both write this file."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        with self._lock:
+            return fn(self, *a, **k)
+    return wrapper
 
 
 def _valid(d):
@@ -17,6 +30,7 @@ def _valid(d):
 class Decisions:
     def __init__(self, path, now, ttl_s=24 * 3600):
         self.path, self.now, self.ttl_s = path, now, ttl_s
+        self._lock = threading.RLock()
 
     def _load(self):
         if not os.path.exists(self.path):
@@ -33,11 +47,14 @@ class Decisions:
         return {}
 
     def _save(self, data):
+        cutoff = self.now() - KEEP_CLOSED_S
+        data = {k: v for k, v in data.items() if v["status"] in ("open", "postponed") or v["expires"] > cutoff}
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, self.path)
 
+    @_locked
     def offer(self, text, options, kind="turn", meta=None):
         data, did = self._load(), secrets.token_hex(4)
         data[did] = {"text": text, "options": list(options), "kind": kind, "meta": meta or {},
@@ -45,6 +62,7 @@ class Decisions:
         self._save(data)
         return did
 
+    @_locked
     def tap(self, did, which):
         """which: an option index or 'p'. Returns (outcome, decision): outcome is chosen, postponed, unknown,
         already, expired."""
@@ -68,6 +86,7 @@ class Decisions:
         self._save(data)
         return "chosen", d
 
+    @_locked
     def expire_due(self):
         """Open or postponed decisions past their time: marked expired and returned, each only once."""
         data, gone = self._load(), []

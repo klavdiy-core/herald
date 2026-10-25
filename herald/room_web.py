@@ -82,7 +82,7 @@ class State:
 
     def _run(self):
         r, done = self.room, False
-        while not r.closed:
+        while not r.closed and not r.halted:        # halted by /stop or the cap: the thread ends (it used to spin)
             if not r.paused and (r.rounds < self.target or r.forced):
                 done = False
                 if not r.step() and r.over:
