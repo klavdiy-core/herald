@@ -260,8 +260,9 @@ session dearer (about 3x for +5,000 tokens).
 - The voice speaks short plain answers only (no code, no tables, under 600 characters), and a Russian voice reads
   Latin words badly ("herald" comes out as "Эволд").
 - The canary is checked with Claude Code 2.1.310 on Windows. Run `doctor` after every Claude Code update.
-- One worker: messages are handled one at a time, so `/stop` takes effect after the turn already running (bounded
-  by its own budget and time limit), not in the middle of it.
+- One worker: messages are handled one at a time. While a turn runs, herald keeps listening: `/stop` is acted on at
+  once and kills the running turn within about a second (its cost is counted as the turn's whole cap, since the
+  real figure is lost with it); other messages and button taps wait and are handled after it, in order.
 
 ## Test
 
@@ -269,7 +270,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-299 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+305 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

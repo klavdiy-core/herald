@@ -4,6 +4,7 @@ Two roots: `control/` (config, state, STOP, never given to the model) and `works
 Owner commands: /stop /resume /new /voice off|voice|both /status; learning: /learn /approve /drop /memory /forget.
 """
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -137,6 +138,15 @@ class Herald:
         self.learn_min_sessions = learn_min_sessions    # a lesson must happen in this many different sessions
         # the team's shared skills for this role: pulled once at start, a table of contents in every system prompt
         self.skills_toc = team_skills.setup(skills_repo, skills_role, workspace, log=self._log)
+        # updates that arrived while a turn ran (the watcher collects them; /stop is acted on at once)
+        self._pending, self._pending_offset, self._batch_end = [], None, None
+
+    def _abortable(self):
+        """Can this engine be told to stop mid-turn? (looked up at each turn: the engine can be swapped)"""
+        try:
+            return "should_abort" in inspect.signature(self.run_turn).parameters
+        except (TypeError, ValueError):
+            return False
 
     # ---------- state ----------
     def _state(self):
@@ -220,8 +230,50 @@ class Herald:
             f.write(text)
         return dataclasses.replace(cfg, append_system_prompt_file=path)
 
+    def _watch(self, done):
+        """While a turn runs on the poll thread, keep listening: /stop from an owner is acted on at once (the turn
+        sees the STOP file and is killed); everything else waits in order for the turn to end."""
+        offset = max(x for x in (self._pending_offset, self._batch_end, self._state()["offset"]) if x is not None)
+        while not done.is_set():
+            try:
+                msgs, offset = self.bot.poll(offset, timeout=1)
+            except Exception as e:                     # noqa: BLE001 — a watcher never takes the turn down
+                self._log(f"watcher: {e}")
+                done.wait(2)
+                continue
+            for m in msgs:
+                if m.kind == "text" and not m.forwarded and _command_word(m.text) == "/stop":
+                    self._command(m.chat_id, "/stop")
+                else:
+                    self._pending.append(m)
+            self._pending_offset = offset
+
+    def drain_pending(self):
+        """Handle what arrived during turns, oldest first, then save the offset past it."""
+        while self._pending:
+            m = self._pending.pop(0)
+            try:
+                self.handle(m)
+            except Exception:
+                self._log(f"update {m.update_id} failed:\n" + traceback.format_exc())
+        if self._pending_offset is not None:
+            self._save(offset=self._pending_offset)
+
     def _turn(self, prompt):
-        r = self.run_turn(prompt, self.workspace, self._system(), session_id=self._state()["session"])
+        kw = {}
+        done = threading.Event()
+        watcher = None
+        if self._abortable():
+            kw["should_abort"] = lambda: os.path.exists(self.stop_path)
+            if hasattr(self.bot, "poll"):
+                watcher = threading.Thread(target=self._watch, args=(done,), daemon=True)
+                watcher.start()
+        try:
+            r = self.run_turn(prompt, self.workspace, self._system(), session_id=self._state()["session"], **kw)
+        finally:
+            done.set()
+            if watcher:
+                watcher.join(timeout=5)
         with open(self.costs_path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": r.cost_usd,
                                 "context_tokens": r.context_tokens, "ok": r.ok,
@@ -564,6 +616,7 @@ class Herald:
 
     def _process(self, msgs, offset):
         """Each update once: one that crashes its handler is logged and passed, never polled again forever."""
+        self._batch_end = offset            # a watcher started mid-batch must not fetch this batch again
         for m in msgs:
             try:
                 self.handle(m)
@@ -574,8 +627,10 @@ class Herald:
     def loop(self, poll_timeout=50):
         while True:
             try:
-                msgs, offset = self.bot.poll(self._state()["offset"], timeout=poll_timeout)
+                start = max(x for x in (self._pending_offset, self._state()["offset"]) if x is not None)
+                msgs, offset = self.bot.poll(start, timeout=poll_timeout)
                 self._process(msgs, offset)
+                self.drain_pending()
                 self.tick()
             except telegram.TelegramError as e:
                 self._log(f"telegram: {e}")

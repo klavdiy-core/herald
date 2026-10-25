@@ -11,6 +11,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 
 # acceptEdits alone lets the model write CLAUDE.md (seen in the live canary); deny rules hold in every mode
@@ -97,18 +98,30 @@ def _kill_tree(proc):
     proc.wait()
 
 
-def run_turn(prompt, workspace, cfg, session_id=None):
+def run_turn(prompt, workspace, cfg, session_id=None, should_abort=None, check_s=1.0):
+    """should_abort: called about every check_s seconds while the turn runs; true kills it (/stop mid-turn)."""
     kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
     proc = subprocess.Popen(build_argv(cfg, session_id), cwd=workspace, env=child_env(cfg),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", **kw)
-    try:
-        out, err = proc.communicate(prompt, timeout=cfg.timeout_s)
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc)
-        # it may have spent up to its cap before it was killed; counting 0 let hangs walk past the daily cap
-        return TurnResult(False, error=f"timeout after {cfg.timeout_s:g}s, turn killed",
-                          cost_usd=cfg.max_budget_usd, cost_estimated=True)
+    deadline, stdin = time.monotonic() + cfg.timeout_s, prompt
+    while True:
+        left = deadline - time.monotonic()
+        try:
+            out, err = proc.communicate(stdin, timeout=max(0.01, min(check_s, left)) if should_abort else max(0.01, left))
+            break
+        except subprocess.TimeoutExpired:
+            stdin = None                           # the prompt is written once; a retry only keeps reading
+            if should_abort and should_abort():
+                _kill_tree(proc)
+                return TurnResult(False, error="stopped by /stop, turn killed",
+                                  cost_usd=cfg.max_budget_usd, cost_estimated=True)
+            if time.monotonic() < deadline:
+                continue
+            _kill_tree(proc)
+            # it may have spent up to its cap before it was killed; counting 0 let hangs walk past the daily cap
+            return TurnResult(False, error=f"timeout after {cfg.timeout_s:g}s, turn killed",
+                              cost_usd=cfg.max_budget_usd, cost_estimated=True)
     try:
         data = json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):

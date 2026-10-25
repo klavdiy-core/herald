@@ -144,6 +144,97 @@ class HaltedWebRoom(unittest.TestCase):
             self.assertEqual(state.room.halted, "stop")
 
 
+class StopDuringATurn(Base):
+    """The last finding: one poll thread, so /stop was heard only after a 10-minute turn had spent its money."""
+
+    def update(self, uid, t):
+        return Message(uid, OWNER, "text", text=t)
+
+    def test_stop_is_heard_while_a_turn_runs_and_ends_it(self):
+        import time as _time
+        seen = {}
+
+        def long_turn(prompt, workspace, cfg, session_id=None, should_abort=None):
+            self.bot.updates.append(self.update(2, "/stop"))   # the owner sends /stop mid-turn
+            end = _time.time() + 5
+            while _time.time() < end:
+                if should_abort and should_abort():
+                    seen["aborted"] = True
+                    return TurnResult(False, error="stopped by /stop", cost_usd=0.2, cost_estimated=True)
+                _time.sleep(0.02)
+            return TurnResult(True, "finished anyway", "s", 0.2)
+        self.h.run_turn = long_turn
+        self.h.handle(self.update(1, "do a long thing"))
+        self.assertTrue(seen.get("aborted"), "the turn never heard /stop")
+        self.assertTrue(os.path.exists(os.path.join(self.control, "STOP")))
+        self.assertNotIn("finished anyway", " ".join(t for _, t in self.bot.texts))
+
+    def test_other_messages_during_a_turn_wait_their_turn_in_order(self):
+        calls = []
+
+        def turn(prompt, workspace, cfg, session_id=None, should_abort=None):
+            calls.append(prompt)
+            if len(calls) == 1:
+                self.bot.updates.extend([self.update(2, "second"), self.update(3, "third")])
+                import time as _time
+                _time.sleep(0.5)                                    # long enough for the watcher to collect them
+            return TurnResult(True, "ok " + prompt, "s", 0.01)
+        self.h.run_turn = turn
+        self.h.handle(self.update(1, "first"))
+        self.h.drain_pending()
+        self.assertEqual(calls, ["first", "second", "third"])
+
+
+class OffsetBot:
+    """Like Telegram: poll(offset) returns every update with update_id >= offset, until the offset moves past it."""
+
+    def __init__(self, base):
+        self.base, self.all = base, []
+
+    def poll(self, offset, timeout=50):
+        ups = [m for m in self.all if m.update_id >= offset]
+        return ups, (max(m.update_id for m in ups) + 1) if ups else offset
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+
+class NoDoubleHandling(Base):
+    def test_the_rest_of_a_batch_is_not_handled_twice_when_a_turn_watches(self):
+        import time as _time
+        bot = OffsetBot(self.bot)
+        self.h.bot = bot
+        calls = []
+
+        def turn(prompt, workspace, cfg, session_id=None, should_abort=None):
+            calls.append(prompt)
+            if prompt == "first":
+                _time.sleep(0.5)                       # the watcher polls meanwhile
+            return TurnResult(True, "ok", "s", 0.01)
+        self.h.run_turn = turn
+        bot.all = [Message(1, OWNER, "text", text="first"), Message(2, OWNER, "text", text="second")]
+        msgs, offset = bot.poll(0)
+        self.h._process(msgs, offset)
+        self.h.drain_pending()
+        self.assertEqual(calls, ["first", "second"])
+
+    def test_the_loop_never_polls_from_an_old_watcher_offset(self):
+        bot = OffsetBot(self.bot)
+        self.h.bot = bot
+        self.h._pending_offset = 2                     # left by a watcher long ago
+        self.h._save(offset=10)                        # the loop has moved on since
+        polled = []
+        real = bot.poll
+        bot.poll = lambda offset, timeout=50: (polled.append(offset), real(offset, timeout))[1]
+
+        def one_round(*a, **k):
+            raise KeyboardInterrupt                    # stop the endless loop after its first poll
+        self.h.tick = one_round
+        with self.assertRaises(KeyboardInterrupt):
+            self.h.loop(poll_timeout=0)
+        self.assertEqual(polled, [10])
+
+
 class FakeRoom:
     def __init__(self):
         self.topic, self.halted, self.spent, self.messages, self.ended = "x", None, 0.0, [], False
@@ -197,6 +288,24 @@ class KilledTurnCost(unittest.TestCase):
             r = engine.run_turn("x", d, self.cfg("print('not json')", 30))
         self.assertEqual(r.cost_usd, 0.5)
         self.assertTrue(r.cost_estimated)
+
+    def test_should_abort_kills_a_real_turn_quickly(self):
+        import time as _time
+        t0 = _time.time()
+        with tempfile.TemporaryDirectory() as d:
+            r = engine.run_turn("x", d, self.cfg("import time; time.sleep(30)", 60),
+                                should_abort=lambda: _time.time() - t0 > 1, check_s=0.2)
+        self.assertLess(_time.time() - t0, 10)
+        self.assertIn("stopped by /stop", r.error)
+        self.assertTrue(r.cost_estimated)
+
+    def test_a_turn_that_finishes_is_read_whole_with_should_abort_on(self):
+        out = "import json,sys,time; sys.stdin.read(); time.sleep(0.6); " \
+              "print(json.dumps({'subtype':'success','result':'done','session_id':'s','total_cost_usd':0.01}))"
+        with tempfile.TemporaryDirectory() as d:
+            r = engine.run_turn("x", d, self.cfg(out, 30), should_abort=lambda: False, check_s=0.2)
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.text, "done")
 
 
 class LedgerMarksAnEstimate(Base):
