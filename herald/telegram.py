@@ -151,8 +151,10 @@ class Bot:
         """One message with a button per row: buttons = [(label, data), ...], data at most 64 bytes."""
         self._check(chat_id)
         rows = [[{"text": label[:60], "callback_data": data[:64]}] for label, data in buttons]
-        self._call("sendMessage", {"chat_id": chat_id, "text": split_text(text)[0] or "…",
-                                   "reply_markup": {"inline_keyboard": rows}})
+        parts = [p for p in split_text(text) if p] or ["…"]
+        for part in parts[:-1]:                     # a long answer is sent whole; the buttons ride on its last part
+            self._call("sendMessage", {"chat_id": chat_id, "text": part})
+        self._call("sendMessage", {"chat_id": chat_id, "text": parts[-1], "reply_markup": {"inline_keyboard": rows}})
 
     def answer_callback(self, callback_id, text=""):
         """Stops the button's spinner; the text shows as a short toast."""

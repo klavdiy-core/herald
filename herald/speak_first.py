@@ -74,17 +74,19 @@ class Gate:
                 raise ValueError("unexpected shape")
             for t in list(s["sent"]) + list(jobs.values()):   # a bad time here once crashed every tick
                 datetime.fromisoformat(t)
-        except TypeError:
+        except (TypeError, ValueError, OSError):
+            # unreadable: keep it for a look, and fail closed (silent until the owner writes), never crash /stop.
+            # The closed state is SAVED: before, the next tick found no file and started fresh (caps forgotten), or
+            # an owner reply saved the "broken" mark and the gate stayed shut for good.
             os.replace(self.state_path, self.state_path + ".bad")
-            return {"sent": [], "unanswered": self.limits.max_unanswered, "jobs": {}, "broken": True}
-        except (ValueError, OSError):
-            # unreadable: keep it for a look, and fail closed (silent until the owner writes), never crash /stop
-            os.replace(self.state_path, self.state_path + ".bad")
-            return {"sent": [], "unanswered": self.limits.max_unanswered, "jobs": {}, "broken": True}
+            closed = {"sent": [], "unanswered": self.limits.max_unanswered, "jobs": {}}
+            self._save(closed)
+            return dict(closed, broken=True)
         s.setdefault("jobs", {})
         return s
 
     def _save(self, s):
+        s = {k: v for k, v in s.items() if k != "broken"}       # a report for this call, never stored
         tmp = self.state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(s, f)
@@ -128,10 +130,13 @@ class Gate:
         s["unanswered"] = 0
         self._save(s)
 
-    def take_due(self, jobs):
-        """Jobs whose time has come; each is marked as run. A long downtime gives one run, not a burst."""
+    def take_due(self, jobs, limit=None):
+        """Jobs whose time has come, at most `limit`; only those returned are marked as run (a job left for the next
+        tick stays due). A long downtime gives one run, not a burst."""
         s, now, due = self._load(), self.now(), []
         for j in jobs:
+            if limit is not None and len(due) >= limit:
+                break
             last = s["jobs"].get(j.name)
             last = datetime.fromisoformat(last) if last else None
             if j.every_min is not None:

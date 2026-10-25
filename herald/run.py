@@ -224,7 +224,8 @@ class Herald:
         r = self.run_turn(prompt, self.workspace, self._system(), session_id=self._state()["session"])
         with open(self.costs_path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": r.cost_usd,
-                                "context_tokens": r.context_tokens, "ok": r.ok}) + "\n")
+                                "context_tokens": r.context_tokens, "ok": r.ok,
+                                "estimated": bool(getattr(r, "cost_estimated", False))}) + "\n")
         if r.ok and r.session_id:
             self._save(session=r.session_id)
         return r
@@ -264,7 +265,10 @@ class Herald:
             self.bot.send_text(m.chat_id, f"Today's daily budget is used up (${usd:.2f} of ${self.max_usd_per_day:.2f}). "
                                           "Turns start again tomorrow, or raise max_usd_per_day.")
             return
-        self.bot.send_action(m.chat_id)
+        try:
+            self.bot.send_action(m.chat_id)              # "typing...": nice to have, never worth the message itself
+        except telegram.TelegramError as e:
+            self._log(f"typing signal not sent ({e})")
         prompt = _forwarded(t) if m.forwarded else (VOICE_IN.format(t) if heard is not None else t)
         try:
             r = self._turn(prompt)
@@ -287,6 +291,14 @@ class Herald:
         else:
             self._reply(chat_id, shown, spoken=answer)
 
+    def _toast(self, callback_id, text):
+        """The spinner and its toast are cosmetic: a late tap ("query is too old") must not cost the choice itself,
+        which is already marked done."""
+        try:
+            self.bot.answer_callback(callback_id, text)
+        except telegram.TelegramError as e:
+            self._log(f"toast not shown ({e}); the choice still counts")
+
     def _tap(self, m):
         hit = TAP.match(m.text or "")
         outcome, d = self.decisions.tap(hit.group(1), "p" if hit.group(2) == "p" else int(hit.group(2))) \
@@ -295,8 +307,8 @@ class Herald:
                "already": f"Already decided: {d['choice'] if d else ''}",
                "postponed": f"Postponed; it expires in {self.decisions.ttl_s // 3600} h."}
         if outcome != "chosen":
-            return self.bot.answer_callback(m.callback_id, say[outcome])
-        self.bot.answer_callback(m.callback_id, f"Chosen: {d['choice']}")
+            return self._toast(m.callback_id, say[outcome])
+        self._toast(m.callback_id, f"Chosen: {d['choice']}")
         if d["kind"] == "room":
             return self._room_choice(m.chat_id, d)
         if os.path.exists(self.stop_path) or self._over_budget():
@@ -444,10 +456,16 @@ class Herald:
             return self.bot.send_text(chat_id, "Recorded: accepted.")
         if not r:
             return self.bot.send_text(chat_id, "That room is closed (herald restarted); start a new /room.")
+        if os.path.exists(self.stop_path):
+            return self.bot.send_text(chat_id, "Stopped (/stop is on); no more rounds.")
         if self._over_budget():
             return self.bot.send_text(chat_id, "Today's daily budget is used up; no more rounds today.")
         r.reopen()
         r.round()
+        if r.halted:                       # halted mid-round: no paid summary, as for the first rounds
+            self._room_log(r)
+            why = "stopped by /stop" if r.halted == "stop" else "stopped: today's daily budget is used up"
+            return self.bot.send_text(chat_id, f"Room on «{r.topic}» {why}; no summary was made.")
         self._room_summary(chat_id, r)
 
     def _command(self, chat_id, t):
@@ -533,11 +551,13 @@ class Herald:
         ok, why = self.gate.may_speak()
         if not ok or self._over_budget():
             return                                  # jobs are not spent while the gate is closed
-        for job in self.gate.take_due(self.jobs)[:1]:
+        for job in self.gate.take_due(self.jobs, limit=1):
             r = self._turn(PROACTIVE.format(job.prompt))
             text = speak_first.what_to_send(r.text) if r.ok else None
-            self._log(f"proactive job={job.name} ok={r.ok} sent={text is not None}")
-            if text:
+            # asked again AFTER the turn: a /stop or quiet hours that began while it ran win over the text
+            still, why = self.gate.may_speak() if text else (True, "")
+            self._log(f"proactive job={job.name} ok={r.ok} sent={bool(text and still)}" + ("" if still else f" ({why})"))
+            if text and still:
                 for owner in sorted(self.owners):
                     self._reply(owner, text)
                 self.gate.record_sent()

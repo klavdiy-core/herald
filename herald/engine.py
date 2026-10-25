@@ -65,6 +65,7 @@ class TurnResult:
     error: str = ""
     num_turns: int = 0
     context_tokens: int = 0     # what the turn read: input + cache written + cache read
+    cost_estimated: bool = False  # the real cost is unknown (killed, or no json): counted as the turn's whole cap
 
 
 def build_argv(cfg, session_id=None):
@@ -105,11 +106,14 @@ def run_turn(prompt, workspace, cfg, session_id=None):
         out, err = proc.communicate(prompt, timeout=cfg.timeout_s)
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
-        return TurnResult(False, error=f"timeout after {cfg.timeout_s:g}s, turn killed")
+        # it may have spent up to its cap before it was killed; counting 0 let hangs walk past the daily cap
+        return TurnResult(False, error=f"timeout after {cfg.timeout_s:g}s, turn killed",
+                          cost_usd=cfg.max_budget_usd, cost_estimated=True)
     try:
         data = json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        return TurnResult(False, error=f"claude did not return json (exit {proc.returncode}): {err.strip()[-300:]}")
+        return TurnResult(False, error=f"claude did not return json (exit {proc.returncode}): {err.strip()[-300:]}",
+                          cost_usd=cfg.max_budget_usd, cost_estimated=True)
     denials = [d.get("tool_name", "?") for d in data.get("permission_denials") or []]
     res = TurnResult(not data.get("is_error") and data.get("subtype") == "success",
                      data.get("result") or "", data.get("session_id") or "", float(data.get("total_cost_usd") or 0),

@@ -45,6 +45,15 @@ class BotTest(unittest.TestCase):
         rows = p["reply_markup"]["inline_keyboard"]
         self.assertEqual([b["callback_data"] for row in rows for b in row], ["d:1:0", "d:1:9"])
 
+    def test_a_long_answer_with_buttons_loses_nothing(self):
+        # an outside review (25.10): only the first 4096 characters were sent; the rest of the answer was dropped
+        long = ("word " * 2000).strip()                             # about 10 000 characters
+        self.bot.send_buttons(OWNER, long, [("A", "d:1:0")])
+        sent = self.api.of("sendMessage")
+        self.assertEqual("".join(p["text"] for p in sent).replace(" ", ""), long.replace(" ", ""))
+        self.assertNotIn("reply_markup", sent[0])
+        self.assertIn("reply_markup", sent[-1])                     # the buttons ride on the last part
+
     def test_a_tap_by_the_owner_is_heard_and_a_strangers_is_not(self):
         self.updates(self.cb(1, "d:1:0"), self.cb(2, "d:1:0", from_id=2002), self.cb(3, "d:1:0", chat_type="group"))
         heard, _ = self.bot.poll(0)
