@@ -1,4 +1,5 @@
-"""python -m herald doctor|run|say --config control/config.json
+"""python -m herald init                 (one message to your bot writes control/config.json)
+   python -m herald doctor|run|say --config control/config.json
    python -m herald learn <transcript.jsonl> [--private] [--ignore REGEX] [--out proposals.md]
    python -m herald team <projects folder> --out <shared folder> [--since-hours N] [--ignore REGEX]
    python -m herald room --config control/config.json   (the agents' room in a browser)
@@ -7,12 +8,12 @@ import argparse
 import os
 import sys
 
-from . import doctor, learning, recall, run, team, voice
+from . import doctor, first_run, learning, recall, run, team, voice
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="herald")
-    ap.add_argument("cmd", choices=["doctor", "run", "say", "learn", "team", "room", "recall"])
+    ap.add_argument("cmd", choices=["init", "doctor", "run", "say", "learn", "team", "room", "recall"])
     ap.add_argument("--query", default="", help="recall: words to find in past sessions")
     ap.add_argument("--db", default="", help="recall: index file (default ~/.herald_recall.db)")
     ap.add_argument("transcript", nargs="?", default="")
@@ -24,6 +25,10 @@ def main(argv=None):
     ap.add_argument("--ignore", default="", help="learn: regex for outputs that are signals, not failures")
     ap.add_argument("--since-hours", type=float, default=None, help="team: only sessions touched in this window")
     a = ap.parse_args(argv)
+    if a.cmd == "init":                          # a control/ folder from one message to the bot; no JSON by hand
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return first_run.init(os.path.dirname(a.config) or "control", os.environ.get("HERALD_TELEGRAM_TOKEN", ""),
+                              persona_src=os.path.join(here, "persona.example.md"))
     if a.cmd == "recall":                        # transcript = a folder of Claude Code sessions
         if not a.transcript or not a.query:
             ap.error("recall needs a sessions folder and --query")

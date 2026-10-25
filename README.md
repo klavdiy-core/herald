@@ -10,17 +10,20 @@ code, and it learns from its own sessions, with your approval. Small: about 2000
 
 ## Try it in one minute (after the bot exists)
 
-You need: Claude Code with the `--restricted` flag, logged in (built and checked on 2.1.310), Python 3.10+, a bot token from [@BotFather](https://t.me/BotFather), your
-Telegram user id (ask [@userinfobot](https://t.me/userinfobot)).
+You need: Claude Code with the `--restricted` flag, logged in (built and checked on 2.1.310), Python 3.10+, and a bot
+token from [@BotFather](https://t.me/BotFather).
 
 ```sh
 git clone https://github.com/klavdiy-core/herald && cd herald
-mkdir control && cp config.example.json control/config.json && cp persona.example.md control/persona.md
-# put your user id into "owners" in control/config.json, and remove the "voice" block for now
 export HERALD_TELEGRAM_TOKEN=123456:your-token        # Windows: set HERALD_TELEGRAM_TOKEN=...
+python -m herald init                                 # then send your bot any message from your own account
 python -m herald doctor --config control/config.json  # PASS/FAIL per check: claude flags, token (getMe), canary
 python -m herald run --config control/config.json
 ```
+
+`init` checks the token, waits for your message and makes you the owner (no user id to look up), and writes
+`control/config.json` (a $5 daily cap, voice off) and `control/persona.md`. It never overwrites an existing file. For
+every option, see `config.example.json`.
 
 Voice (optional): `pip install piper-tts`, `python -m piper.download_voices en_US-lessac-medium --download-dir voices`,
 `ffmpeg` with libopus on PATH, put the `voice` block back. Then `/voice both` in the chat.
@@ -279,7 +282,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-334 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+340 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
