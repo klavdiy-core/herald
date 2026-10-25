@@ -83,6 +83,7 @@ class RoomHolds(unittest.TestCase):
                                max_usd_per_day=1.0)
         fake._room_log = lambda r: run.Herald._room_log(fake, r)
         fake._over_budget = lambda extra=0.0: False
+        fake._today = lambda: run.spent_today(self.costs)
         seat = SimpleNamespace(agent=SimpleNamespace(reply_cap=0.3))
         r = SimpleNamespace(spent=0.0, logged=0.0, seats=[seat])
         for _ in range(50):                                                   # before the reply, then polls during it
@@ -92,6 +93,26 @@ class RoomHolds(unittest.TestCase):
         run.Herald._room_halt(fake, r)
         self.assertEqual(sum(1 for x in self.rows() if x.get("kind") == "reserve"), 2)
         self.assertAlmostEqual(run.spent_today(self.costs)[0], 0.1 + 0.3)
+
+    def test_a_standing_hold_still_sees_the_cap_used_up_elsewhere(self):
+        # Tsaplya S1: a free reply leaves the hold standing; another process spends past the cap; the next reply
+        # must not go on (0.23.4 stopped checking while a hold stood)
+        should_stop, _ = run.room_guard(self.cfg)
+        self.assertIsNone(should_stop())                                      # reply 1 held, then cost nothing
+        with open(self.costs, "a", encoding="utf-8") as f:
+            f.write(_row(5.0, ok=True))
+        self.assertEqual(should_stop(), "budget")
+        from types import SimpleNamespace
+        costs2 = os.path.join(self.tmp.name, "costs2.jsonl")
+        fake = SimpleNamespace(stop_path=os.path.join(self.tmp.name, "STOP"), costs_path=costs2, max_usd_per_day=1.0)
+        fake._room_log = lambda r: run.Herald._room_log(fake, r)
+        fake._over_budget = lambda extra=0.0: False
+        fake._today = lambda: run.spent_today(costs2)
+        r = SimpleNamespace(spent=0.0, logged=0.0, seats=[SimpleNamespace(agent=SimpleNamespace(reply_cap=0.3))])
+        self.assertIsNone(run.Herald._room_halt(fake, r))
+        with open(costs2, "a", encoding="utf-8") as f:
+            f.write(_row(5.0, ok=True))
+        self.assertEqual(run.Herald._room_halt(fake, r), "budget")            # the bot's room too
 
     def test_room_guard_refuses_when_the_hold_does_not_fit(self):
         with open(self.costs, "w", encoding="utf-8") as f:

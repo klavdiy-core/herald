@@ -263,8 +263,12 @@ class Herald:
             return "stop"
         # this is also should_abort, polled while a reply runs: with a hold standing and nothing new spent, it stands
         # (0.23.2 released and re-held on every poll: two ledger rows each time)
-        if getattr(r, "hold", (None, 0.0))[0] and r.spent <= getattr(r, "logged", 0.0):
-            return None
+        rid, held = getattr(r, "hold", (None, 0.0))
+        if rid and r.spent <= getattr(r, "logged", 0.0):
+            # ... but the cap is still checked: someone else may have used it up (Tsaplya S1); our own hold is not
+            # counted against us
+            over = self.max_usd_per_day is not None and self._today()[0] - held >= self.max_usd_per_day
+            return "budget" if over else None
         self._room_log(r)                                # spend so far written, the last hold released
         nxt = max((getattr(s.agent, "reply_cap", 0.0) or getattr(s.agent, "cost_per_call", 0.0) or 0.0
                    for s in r.seats), default=0.0)
@@ -991,8 +995,10 @@ def room_guard(cfg):
             return "stop"
         if cap is None:
             return None
-        if hold[0]:
-            return None                                 # a hold stands for the reply in progress
+        if hold[0]:                                     # a hold stands for the reply in progress (no new hold) ...
+            # ... yet the cap is still read, our own hold left out: a free reply leaves the hold standing, and another
+            # process may spend past the cap meanwhile (Tsaplya S1)
+            return "budget" if spent_today(costs)[0] - hold[1] >= cap else None
         if not nxt:
             return "budget" if spent_today(costs)[0] >= cap else None
         rid = reserve(costs, nxt, cap, "room")
