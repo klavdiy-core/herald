@@ -73,6 +73,7 @@ class Notebook:
             return [e.strip() for e in f.read().split(SEP) if e.strip()]
 
     def add_memory(self, line):
+        line = line.replace(SEP, "\n(§)\n")          # the separator inside an entry would split it in two
         if line.strip() in self.memory():
             return                        # approving the same lesson twice keeps one line
         entries = self.memory() + [line.strip()]

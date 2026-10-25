@@ -44,8 +44,10 @@ class ClaudeRole:
 
 
 class Command:
-    def __init__(self, name, command, timeout_s=180, prompt_arg=False, cwd=None, pass_env=()):
+    def __init__(self, name, command, timeout_s=180, prompt_arg=False, cwd=None, pass_env=(), cost_per_call=0.0):
         self.name, self.command, self.timeout_s = name, list(command), timeout_s
+        # an outside program's price is unknown here; "cost_per_call_usd" lets the room budget count it anyway
+        self.cost_per_call = cost_per_call
         self.prompt_arg, self.cwd = prompt_arg, cwd    # some CLIs take the question as an argument, not on stdin
         if prompt_arg and sys.platform == "win32":
             # a .cmd/.bat runs through cmd.exe, which parses & | > in its arguments: the prompt (which other agents
@@ -73,7 +75,7 @@ class Command:
         out = p.stdout.strip()
         if p.returncode != 0 or not out:
             return f"({self.name} could not answer: exit {p.returncode})", 0.0
-        return out, 0.0              # an outside program's price is not known here
+        return out, self.cost_per_call
 
 
 def from_config(entry, workdir, claude_cmd=None, skills_repo=None):
@@ -88,5 +90,5 @@ def from_config(entry, workdir, claude_cmd=None, skills_repo=None):
             raise ValueError(f"agent {name}: a command agent needs \"command\": [program, args...]")
         cwd = os.path.join(workdir, "agents", re.sub(r"\W+", "_", name), "cwd")   # an empty folder of its own
         return Command(name, entry["command"], entry.get("timeout_s", 180), bool(entry.get("prompt_arg")), cwd,
-                       entry.get("pass_env") or ())
+                       entry.get("pass_env") or (), cost_per_call=float(entry.get("cost_per_call_usd") or 0))
     raise ValueError(f"agent {name}: kind must be \"claude\" or \"command\"")

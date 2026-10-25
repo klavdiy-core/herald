@@ -71,6 +71,18 @@ class Index(unittest.TestCase):
         self.assertEqual(recall.index(self.db, self.proj), 1)
         self.assertTrue(any("logo" in h["text"] for h in recall.search(self.db, "logo")))
 
+    def test_a_rewritten_file_replaces_its_old_messages(self):
+        # two outside reviews (25.10): a file that shrank was read again from the start, but its old rows stayed -
+        # duplicates, and words that are no longer in the session still found
+        recall.index(self.db, self.proj)
+        t = Transcript()
+        t.user("which database did we pick for the shop?", T(0))
+        t.say("Postgres, after all.", T(1))
+        os.replace(t.write(self.tmp.name), os.path.join(self.proj, "s-a.jsonl"))     # rewritten, and shorter
+        recall.index(self.db, self.proj)
+        self.assertEqual(recall.search(self.db, "SQLite"), [])                        # gone from the session
+        self.assertEqual(len([h for h in recall.search(self.db, "database shop") if h["session"] == "s-a"]), 1)
+
     def test_search_syntax_cannot_break_the_query(self):
         recall.index(self.db, self.proj)
         for q in ('"', "shop OR", "NEAR(", "*", "a AND NOT b", "'; DROP TABLE x; --", ""):

@@ -51,6 +51,17 @@ class Corrections(unittest.TestCase):
         props = [p for p in learning.propose(report("Read", "/w/app.ts", cs), private=True) if "corrected" in p["title"]]
         self.assertEqual(len(props), 1, props)
 
+    def test_a_private_correction_still_says_what_was_claimed(self):
+        # an outside review (25.10): in private mode the lesson was only a date and "re-read that exchange", which a
+        # confined turn cannot do. The model's own claim is kept; any word the human typed is masked in it.
+        rep = report("Read", "/w/app.ts", [{"ts": "2026-10-20T10:00:00Z", "claim": "Done, all tests pass for Ivanova.",
+                                              "correction": "No, you never ran them, Ivanova is waiting"}])
+        rep["typed"] = ["never", "ran", "them", "Ivanova", "waiting"]       # the words the human typed
+        props = [p for p in learning.propose(rep, private=True) if "corrected" in p["title"]]
+        self.assertIn("all tests pass", props[0]["draft"])
+        self.assertNotIn("Ivanova", props[0]["draft"])
+        self.assertNotIn("never ran", props[0]["draft"])
+
     def test_different_corrections_stay_apart(self):
         cs = [self.corr("2026-10-20T10:00:00Z", "You did not run the tests."),
               self.corr("2026-10-21T10:00:00Z", "That is the wrong branch.")]

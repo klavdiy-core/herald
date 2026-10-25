@@ -216,7 +216,9 @@ class Learning(unittest.TestCase):
         props = learning.propose(self.report, private=True)
         text = json.dumps(props, ensure_ascii=False)
         self.assertNotIn("PowerShell 5.1 ломает", text)              # the human's own words are not copied
-        self.assertNotIn("saved with UTF-8", text)                   # nor the claim, which may quote them
+        # the model's own claim stays (an outside review, 25.10: without it the lesson taught nothing); any word the
+        # human typed is masked inside it - see test_lesson_wording.test_a_private_correction_still_says_what_was_claimed
+        self.assertIn("saved with UTF-8", text)
         self.assertTrue(any(p["kind"] == "memory" for p in props))  # but the correction still yields a proposal
 
     def test_markdown_render(self):

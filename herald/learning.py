@@ -423,9 +423,11 @@ def propose(report, private=False, min_sessions=1):
     for cs in groups.values():
         c, n, when = cs[0], len(cs), ", ".join(x["ts"] for x in cs)
         if private:
-            # neither side's words: the assistant's claim often quotes the human
-            draft = (f"- A claim was corrected by the human ({when}). Re-read that exchange and write the rule in "
-                     f"your own words; the check that would have caught it belongs at the point of action.")
+            # the model's own claim, with every word the human typed masked (it may quote them); the human's
+            # correction is not shown. A date and "re-read that exchange" alone taught a confined turn nothing.
+            claim = _scrub(" ".join(c["claim"].split())[:160], report.get("typed", []))
+            draft = (f"- Claimed \"{claim}\" and the human corrected it ({when}). Before claiming that again, check "
+                     f"it where it happens (run it, open it); the correction's words are not kept in private mode.")
         else:
             draft = f"- Claimed: \"{c['claim'][:160]}\" -> corrected: \"{c['correction'][:200]}\""
         title = "A claim the human corrected" + (f" ({n} times)" if n > 1 else "")

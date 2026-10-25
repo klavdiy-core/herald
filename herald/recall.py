@@ -60,6 +60,10 @@ def index(db, folder):
                 row = con.execute("SELECT lines, size FROM files WHERE path=?", (path,)).fetchone()
                 done = row[0] if row and size >= row[1] else 0       # a file that shrank was rewritten: start over
                 session, n = name[:-6], 0
+                if row and not done:                                  # ...and its old messages go (they were duplicated)
+                    for mid, old in con.execute("SELECT id, text FROM messages WHERE session=?", (session,)).fetchall():
+                        con.execute("INSERT INTO fts(fts, rowid, text) VALUES ('delete', ?, ?)", (mid, old))
+                    con.execute("DELETE FROM messages WHERE session=?", (session,))
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for n, line in enumerate(f, 1):
                         if not line.endswith("\n"):

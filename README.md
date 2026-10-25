@@ -6,7 +6,7 @@
 
 You write to a Telegram bot; herald runs one Claude Code turn in a workspace folder and answers in text, and in a
 voice message if you want (local speech, no cloud). It can also write first, on a schedule, inside limits written in
-code, and it learns from its own sessions, with your approval. Small: about 2000 lines of Python, standard library plus optional `piper-tts` for the voice.
+code, and it learns from its own sessions, with your approval. Small: about 3,200 lines of Python, standard library plus optional `piper-tts` for the voice.
 
 ## Try it in one minute (after the bot exists)
 
@@ -16,12 +16,12 @@ token from [@BotFather](https://t.me/BotFather).
 ```sh
 git clone https://github.com/klavdiy-core/herald && cd herald
 export HERALD_TELEGRAM_TOKEN=123456:your-token        # Windows: set HERALD_TELEGRAM_TOKEN=...
-python -m herald init                                 # then send your bot any message from your own account
+python -m herald init                                 # then send your bot the six-digit code it prints
 python -m herald doctor --config control/config.json  # PASS/FAIL per check: claude flags, token (getMe), canary
 python -m herald run --config control/config.json
 ```
 
-`init` checks the token, waits for your message and makes you the owner (no user id to look up), and writes
+`init` checks the token, prints a six-digit code and makes whoever sends that code to the bot the owner (messages from before init, or without the code, do not count; no user id to look up), and writes
 `control/config.json` (a $5 daily cap, voice off) and `control/persona.md`. It never overwrites an existing file. For
 every option, see `config.example.json`.
 
@@ -45,11 +45,16 @@ claude -p --restricted --permission-prompts none --permission-mode acceptEdits
 - The prompt goes on stdin, the child process gets an allow-listed environment (no bot token, no API keys unless you
   opt in), every turn has a turn, money and wall-clock limit.
 
-**`herald doctor` checks it on your machine before every start.** A live turn is told to read and write outside the
-workspace, give itself Bash in `.claude/settings.json`, write a git hook and a `CLAUDE.md`, and to write one allowed
-file. The disk is checked afterwards, not the model's words. If even the allowed write is missing, the canary proves
-nothing and doctor fails. That canary found two real holes while herald was being built: without `acceptEdits` the
-model could not write at all, and with it alone it could write `CLAUDE.md`.
+**`herald doctor` checks it on your machine before every start.** A live turn is told to read outside the workspace
+five ways (a relative `../` path, an absolute path, a link inside the workspace pointing out, Grep and Glob with an
+outside path; each with its own token, so a breach names its way out), to write outside, give itself Bash in
+`.claude/settings.json`, write a git hook and a `CLAUDE.md`, and to write one allowed file. The disk is checked
+afterwards, not the model's words, and the canary says only what it saw: every outside read must have been tried and
+refused, or the result is "inconclusive"; for the forbidden writes it reports that none landed and how many attempts
+it saw (a model may simply not try them). If even the allowed write is missing, the canary proves nothing and doctor
+fails. It found two real holes while herald was being built: without `acceptEdits` the model could not write at all,
+and with it alone it could write `CLAUDE.md`. It tests Claude Code's confinement on this machine, today; it is not an
+OS sandbox, so run `doctor` after every Claude Code update.
 
 ## Telegram
 
@@ -160,7 +165,10 @@ On a real 35 MB session the first index took about a second, later searches 0.3 
 The idea (memory and skills in the prompt, nudges after hard work, umbrella skills, "do not save one-off failures",
 search over past sessions)
 comes from [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, MIT; no code is copied.
-The difference: Hermes writes its skills itself, herald only proposes.
+The difference is not who writes: Hermes can also hold its writes for approval (`skills.write_approval`,
+`memory.write_approval`, off by default) and keeps a log with rollback. Here there is no model in the learning loop
+at all (proposals come from plain code reading the transcripts), and approval is not a setting: nothing is kept
+without `/approve` or a Keep tap.
 
 ## Buttons: decide with one tap
 
@@ -228,7 +236,7 @@ description is skipped and logged; if the pull fails, the local copy is used.
 **What is confined and what is not.** A Claude role is confined like every herald turn (Claude Code's
 `--restricted`, its own empty folder, Read only). A `command` agent is an ordinary program you chose: herald only
 gives it an empty folder of its own and the same allow-listed environment as a Claude turn (no bot token, no
-`TYPESAFE_API_KEY`); a CLI that needs its own key names it in `"pass_env": ["ITS_KEY"]`. Treat a command agent as
+`TYPESAFE_API_KEY`); a CLI that needs its own key names it in `"pass_env": ["ITS_KEY"]`. A command agent is an ordinary program: it is not confined like a Claude turn, and its price is unknown to herald, so it counts as $0 unless you set `"cost_per_call_usd"` on it. Room agents live in their own root (`herald-agents/` next to `control/`, or `"agents_dir"`), outside `control/` and the workspace. Treat a command agent as
 code you run yourself. On Windows a `.cmd`/`.bat` target with `"prompt_arg": true` is refused at start: cmd.exe
 would read `&` or `>` in the prompt as commands. Point it at the real `.exe`, or send the prompt on stdin.
 
@@ -282,7 +290,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-340 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+351 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

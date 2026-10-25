@@ -386,8 +386,9 @@ class ConfigTest(unittest.TestCase):
             cfg = run.load_config(p)
             ag = run.room_agents(cfg)
             self.assertEqual(sorted(ag), ["Gemini", "Raven"])
-            self.assertTrue(ag["Raven"].ws.startswith(os.path.realpath(cfg["control"])) or
-                            ag["Raven"].ws.startswith(cfg["control"]))      # agents live in control/, not the workspace
+            ws = os.path.abspath(ag["Raven"].ws)
+            for forbidden in (cfg["control"], cfg["workspace"]):         # their own root: not control/, not the workspace
+                self.assertFalse(ws.startswith(os.path.abspath(forbidden) + os.sep), (ws, forbidden))
 
     def test_room_voices_come_from_the_agents_entries(self):
         with tempfile.TemporaryDirectory() as d:

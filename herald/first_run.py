@@ -1,12 +1,14 @@
 """herald init: a working control/ folder without editing JSON by hand.
 
 The token comes from HERALD_TELEGRAM_TOKEN only (never an argument: it would land in the shell history). The bot
-is checked with getMe, then the owner is asked to send it any message: the sender of that message becomes the
-owner, so nobody has to look up a numeric user id. That message is marked as read, so the first run does not answer
+is checked with getMe, then a six-digit code is printed here and the owner sends it to the bot: the sender of
+that code becomes the owner (messages from before init, and messages without the code, do not count), so nobody has
+to look up a numeric user id. That message is marked as read, so the first run does not answer
 it. Existing files are never overwritten.
 """
 import json
 import os
+import secrets
 import time
 
 from . import telegram
@@ -31,9 +33,21 @@ def _config(owner, control):
     }
 
 
-def wait_for_owner(bot, wait_s=120, poll_s=10, now=time.monotonic):
-    """The first private text message to the bot: (user id, first name). The update is then acknowledged."""
-    deadline, offset = now() + wait_s, 0
+def pair_code():
+    """Six digits shown in the terminal: whoever sends them to the bot is the person at this machine."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _skip_backlog(bot):
+    """Messages that reached the bot before init ran are not a claim to ownership: acknowledge and drop them."""
+    ups = bot._call("getUpdates", {"offset": 0, "timeout": 0}) or []
+    return max((int(u.get("update_id", 0)) + 1 for u in ups), default=0)
+
+
+def wait_for_owner(bot, code, wait_s=120, poll_s=10, now=time.monotonic, offset=0):
+    """The first private message that carries the code: (user id, first name). The update is then acknowledged.
+    (An outside review, 25.10: 'the first to write is the owner' let a stranger who wrote first take the bot.)"""
+    deadline = now() + wait_s
     while now() < deadline:
         ups = bot._call("getUpdates", {"offset": offset, "timeout": poll_s, "allowed_updates": ["message"]},
                         timeout=poll_s + 10) or []
@@ -41,13 +55,15 @@ def wait_for_owner(bot, wait_s=120, poll_s=10, now=time.monotonic):
             offset = max(offset, int(u.get("update_id", 0)) + 1)
             m = u.get("message") or {}
             sender, chat = m.get("from") or {}, m.get("chat") or {}
-            if chat.get("type") == "private" and not sender.get("is_bot") and isinstance(sender.get("id"), int):
+            if (chat.get("type") == "private" and not sender.get("is_bot") and isinstance(sender.get("id"), int)
+                    and code in str(m.get("text") or "")):
                 bot._call("getUpdates", {"offset": offset, "timeout": 0})        # mark it read
                 return sender["id"], str(sender.get("first_name") or "")
     return None
 
 
-def init(control, token, api_base="https://api.telegram.org", wait_s=120, poll_s=10, out=print, persona_src=None):
+def init(control, token, api_base="https://api.telegram.org", wait_s=120, poll_s=10, out=print, persona_src=None,
+         code=None):
     """Returns 0 when control/config.json was written, 2 when nothing was written (the reason is printed)."""
     cfg_path = os.path.join(control, "config.json")
     if os.path.exists(cfg_path):
@@ -60,11 +76,13 @@ def init(control, token, api_base="https://api.telegram.org", wait_s=120, poll_s
     bot = telegram.Bot(token, owners={0}, api_base=api_base)
     me = bot._call("getMe") or {}
     name = me.get("username") or "your bot"
-    out(f"Bot @{name} is reachable. Send it any message from your own Telegram account now "
-        f"(waiting up to {wait_s} s)...")
-    found = wait_for_owner(bot, wait_s, poll_s)
+    code = code or pair_code()
+    offset = _skip_backlog(bot)
+    out(f"Bot @{name} is reachable. From your own Telegram account, send it this code: {code}\n"
+        f"(waiting up to {wait_s} s; other messages are ignored)")
+    found = wait_for_owner(bot, code, wait_s, poll_s, offset=offset)
     if not found:
-        out("No message arrived; nothing was written. Run herald init again and send the bot a message.")
+        out("No message with the code arrived; nothing was written. Run herald init again.")
         return 2
     owner, first = found
     os.makedirs(control, exist_ok=True)

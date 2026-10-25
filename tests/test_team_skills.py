@@ -107,6 +107,20 @@ class Config(unittest.TestCase):
             h, _ = run.build(cfg, "123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
             self.assertIn("witness-numbers", h.skills_toc)
 
+    def test_room_agents_do_not_live_inside_control(self):
+        # an outside review (25.10): their cwd was control/agents/<name>/ws, next to learned/, herald.json and
+        # decisions.json - held only by --restricted
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            control = os.path.join(d, "control")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": control,
+                           "agents": [{"name": "Ворон", "kind": "claude"}]}, f)
+            a = run.room_agents(run.load_config(p))["Ворон"]
+            ws = os.path.abspath(a.ws)
+            self.assertFalse(ws.startswith(os.path.abspath(control) + os.sep), ws)
+            self.assertFalse(os.path.abspath(a.cfg.append_system_prompt_file).startswith(os.path.abspath(control)))
+
     def test_unknown_keys_in_team_skills_are_refused(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "c.json")

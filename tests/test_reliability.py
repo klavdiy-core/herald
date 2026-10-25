@@ -313,6 +313,54 @@ class TelegramRoomAndLearn(Base):
 
 
 
+class SmallFindings(Base):
+    """From two outside reviews, 25.10."""
+
+    def test_a_command_agent_can_say_what_a_call_costs(self):
+        from herald import agents
+        with tempfile.TemporaryDirectory() as d:
+            a = agents.from_config({"name": "Gemini", "kind": "command", "command": [sys.executable, "-c",
+                                    "import sys; print('an idea')"], "cost_per_call_usd": 0.02}, d)
+            text, cost = a.speak("hi")
+            self.assertEqual((text, cost), ("an idea", 0.02))           # the room budget can count it now
+            b = agents.from_config({"name": "Free", "kind": "command", "command": [sys.executable, "-c",
+                                    "print('x')"]}, d)
+            self.assertEqual(b.speak("hi")[1], 0.0)
+
+    def test_an_answer_that_is_only_choices_shows_no_raw_markup(self):
+        self.engine.answer = "[[choices: Rewrite | Keep]]"
+        self.h.handle(Message(40, OWNER, "text", text="what now?"))
+        shown = self.bot.buttons[-1][1]
+        self.assertNotIn("[[choices", shown)
+        self.assertEqual([b[0] for b in self.bot.buttons[-1][2]][:2], ["Rewrite", "Keep"])
+
+    def test_a_memory_line_holding_the_separator_does_not_split_memory(self):
+        self.h.nb.add_memory("- first\n§\nsecond half")
+        self.assertEqual(len(self.h.nb.memory()), 1)
+
+
+class CrashMidBatch(Base):
+    def test_the_rest_of_a_batch_survives_a_crash(self):
+        # an outside review (25.10): the watcher confirms the whole batch to Telegram before it is handled; a crash
+        # mid-batch lost the tail for good. The tail is kept on disk and handled at the next start.
+        calls = []
+
+        def turn(prompt, workspace, cfg, session_id=None, should_abort=None):
+            calls.append(prompt)
+            if prompt == "first":
+                raise KeyboardInterrupt                      # the daemon dies in the middle of the batch
+            return TurnResult(True, "ok", "s", 0.01)
+        self.h.run_turn = turn
+        batch = [Message(1, OWNER, "text", text="first"), Message(2, OWNER, "text", text="second")]
+        with self.assertRaises(KeyboardInterrupt):
+            self.h._process(batch, 3)
+        h2 = self.make()                                     # the next start
+        h2.run_turn = turn
+        h2.resume()
+        self.assertEqual(calls, ["first", "second"])         # "first" is not run twice; "second" is not lost
+        self.assertFalse(os.path.exists(os.path.join(self.control, "inflight.json")))
+
+
 class FakeRoom:
     def __init__(self):
         self.topic, self.halted, self.spent, self.messages, self.ended = "x", None, 0.0, [], False
