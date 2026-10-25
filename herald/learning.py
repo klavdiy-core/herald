@@ -456,7 +456,23 @@ def shown_not_lessons(report, private=False):
             for n in report.get("not_lessons", []) if redact(n["signature"], private) != WITHHELD]
 
 
-def render_md(props, source="", not_lessons=None):
+NOISE_BAR = 0.35   # Jev's probability that a proposal is a real lesson; below it the proposal is shown as noise
+
+
+def jev_sift(props, judge, bar=NOISE_BAR):
+    """(kept, noise): each proposal asked «a lesson or noise?» by Jev. Noise is not deleted — it moves to its own
+    section with Jev's probability, so a person can still overrule him. Jev unreachable = the proposal is kept."""
+    kept, noise = [], []
+    for p in props:
+        q = judge.lesson(p["title"], p["draft"]) if judge else None
+        if q is not None and q < bar:
+            noise.append(dict(p, jev=round(q, 2)))
+        else:
+            kept.append(p)
+    return kept, noise
+
+
+def render_md(props, source="", not_lessons=None, noise=None):
     out = ["# Learning proposals", ""]
     if source:
         out += [f"From: {source}. Nothing here is applied by itself: read, then approve or drop.", ""]
@@ -473,4 +489,9 @@ def render_md(props, source="", not_lessons=None):
                 seen.add(key)
                 out.append(f"- **{n['why']}**: after `{n['signature'][:90]}`, {n['fixed_by']} `{n['fix_input'][:60]}` "
                            f"only followed it. Right move: {n['right_move']}.")
+    if noise:
+        out += ["", "## Jev: noise, not lessons", "",
+                "Jev (TypeSafe) judged these more likely noise than a lesson. Not applied; approve by hand if he is "
+                "wrong.", ""]
+        out += [f"- [{p['kind']}] {p['title']} — lesson probability {p['jev']:.2f}" for p in noise]
     return "\n".join(out) + "\n"

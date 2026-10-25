@@ -21,6 +21,8 @@ def main(argv=None):
     ap.add_argument("--text", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--private", action="store_true", help="learn: keep mechanics, drop every quoted message")
+    ap.add_argument("--jev", action="store_true",
+                    help="learn: ask Jev (TypeSafe) which proposals are noise; sends their text to TypeSafe")
     ap.add_argument("--min-sessions", type=int, default=2, help="learn: a lesson must happen in this many sessions")
     ap.add_argument("--ignore", default="", help="learn: regex for outputs that are signals, not failures")
     ap.add_argument("--since-hours", type=float, default=None, help="team: only sessions touched in this window")
@@ -52,9 +54,18 @@ def main(argv=None):
         if not paths:
             raise FileNotFoundError(f"no .jsonl transcripts in {a.transcript}")
         rep = learning.analyze_many(paths, a.ignore or None)
-        md = learning.render_md(learning.propose(rep, a.private, a.min_sessions),
+        props, noise = learning.propose(rep, a.private, a.min_sessions), []
+        if a.jev:                                # sends each proposal's text to TypeSafe: never in --private mode
+            if a.private:
+                ap.error("--jev sends proposals to an outside service; it is not allowed with --private")
+            from . import jev
+            judge = jev.from_env()
+            if not judge:
+                ap.error("--jev needs TYPESAFE_API_KEY")
+            props, noise = learning.jev_sift(props, judge)
+        md = learning.render_md(props,
                                 source=f"{os.path.basename(os.path.normpath(a.transcript))}, {len(paths)} session(s)",
-                                not_lessons=learning.shown_not_lessons(rep, a.private))
+                                not_lessons=learning.shown_not_lessons(rep, a.private), noise=noise)
         if a.out:
             with open(a.out, "w", encoding="utf-8") as f:
                 f.write(md)

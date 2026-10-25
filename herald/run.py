@@ -16,8 +16,11 @@ import traceback
 from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, room_web, team_skills, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "agents_dir", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
-        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room", "team_skills"}
+        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room", "team_skills",
+        "jev"}
 SKILLS_KEYS = {"repo", "role"}
+JEV_KEYS = {"learn", "route_simple", "route_bar"}   # both send text to TypeSafe: off unless written here
+ROUTE_BAR = 0.7          # Jev's probability that a small model is enough, before a message goes to route_simple
 ROOM_KEYS = {"port", "budget_usd", "pace_s"}
 DEFAULT_ROOM_BUDGET = 0.5     # dollars per room, Telegram and browser alike, unless "room": {"budget_usd": ...} says otherwise
 MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
@@ -49,9 +52,17 @@ def load_config(path):
             del cfg[k]
     unknown =(set(cfg) - KEYS | set(cfg.get("voice", {})) - VOICE_KEYS | set(cfg.get("speak_first", {})) - SPEAK_KEYS
                | set(cfg.get("hearing", {})) - HEAR_KEYS | set(cfg.get("room", {})) - ROOM_KEYS
-               | set(cfg.get("team_skills", {})) - SKILLS_KEYS)
+               | set(cfg.get("team_skills", {})) - SKILLS_KEYS | set(cfg.get("jev", {})) - JEV_KEYS)
     if unknown:
         raise ValueError(f"unknown config keys (refusing to guess): {sorted(unknown)}")
+    jc = cfg.get("jev") or {}
+    if "route_simple" in jc and not (isinstance(jc["route_simple"], str) and MODEL_NAME.match(jc["route_simple"])):
+        raise ValueError(f"jev.route_simple must be a model name like claude-haiku-5-5, got {jc['route_simple']!r}")
+    if "learn" in jc and not isinstance(jc["learn"], bool):
+        raise ValueError(f"jev.learn must be true or false, got {jc['learn']!r}")
+    if "route_bar" in jc and (isinstance(jc["route_bar"], bool) or not isinstance(jc["route_bar"], (int, float))
+                              or not 0 < jc["route_bar"] <= 1):
+        raise ValueError(f"jev.route_bar must be a number in (0, 1], got {jc['route_bar']!r}")
     if not cfg.get("owners"):
         raise ValueError("owners must not be empty")
     # Telegram ids are numbers; "1001" written as a string once left the bot silently deaf
@@ -134,7 +145,10 @@ class Herald:
                  hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
                  max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
                  room_sync=False, decision_ttl_s=24 * 3600, now=time.time, learn_min_sessions=2, skills_repo=None,
-                 skills_role=None):
+                 skills_role=None, jev_judge=None, jev_learn=False, route_simple=None, route_bar=ROUTE_BAR):
+        # Jev's two opt-in jobs outside the room: the /learn sieve and the model router (README, «Jev»)
+        self.jev_judge, self.jev_learn, self.route_simple, self.route_bar = jev_judge, jev_learn, route_simple, route_bar
+        self.last_route = None                          # (model, probability) of the last routed turn, for /status
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -247,13 +261,27 @@ class Herald:
             f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
                                 "usd": round(new, 6), "kind": "room", "ok": True}) + "\n")
 
-    def _system(self):
-        """persona + what the owner approved, rebuilt before every turn, kept in control/; the owner's /model."""
+    def _route(self, prompt):
+        """The small model for a message Jev judges simple; None = the configured one. The owner's /model always wins."""
+        self.last_route = None
+        if not (self.route_simple and self.jev_judge and prompt) or self._state().get("model"):
+            return None
+        p = self.jev_judge.simple(prompt)
+        if p is not None and p >= self.route_bar:
+            self.last_route = (self.route_simple, round(p, 2))
+            return self.route_simple
+        return None
+
+    def _system(self, prompt=None):
+        """persona + what the owner approved, rebuilt before every turn, kept in control/; the owner's /model;
+        else Jev's route to the small model for a simple message."""
         if self.engine_cfg is None:
             return None
         cfg = self.engine_cfg
         if self._state().get("model"):
             cfg = dataclasses.replace(cfg, model=self._state()["model"])
+        elif self._route(prompt):
+            cfg = dataclasses.replace(cfg, model=self.route_simple)
         if self.max_usd_per_day is not None:            # a turn never gets more than today has left
             left = self.max_usd_per_day - self._today()[0]
             cfg = dataclasses.replace(cfg, max_budget_usd=max(MIN_TURN, min(cfg.max_budget_usd, round(left, 4))))
@@ -338,7 +366,7 @@ class Herald:
                 watcher = threading.Thread(target=self._watch, args=(done,), daemon=True)
                 watcher.start()
         try:
-            r = self.run_turn(prompt, self.workspace, self._system(), session_id=self._state()["session"], **kw)
+            r = self.run_turn(prompt, self.workspace, self._system(prompt), session_id=self._state()["session"], **kw)
         finally:
             done.set()
             if watcher:
@@ -495,6 +523,9 @@ class Herald:
         report = learning.analyze_many(paths)
         props = [p for p in learning.propose(report, private=True, min_sessions=self.learn_min_sessions)   # names, numbers: masked
                  if not self.nb.knows(p)]
+        noise = []
+        if self.jev_learn and self.jev_judge:          # the owner turned the sieve on: masked drafts go to TypeSafe
+            props, noise = learning.jev_sift(props, self.jev_judge)
         self.nb.set_pending(props)
         if not props:
             return self.bot.send_text(chat_id, "Nothing new: nothing repeated or corrected that is not learned already.")
@@ -504,7 +535,8 @@ class Herald:
             body = re.sub(r"(?s)^---.*?---\s*", "", p["draft"]).strip()
             blocks.append(f"{i}. [{p['kind']}] {(name.group(1) + ': ') if name else ''}{p['title']}\n"
                           f"{body[:400]}{' …' if len(body) > 400 else ''}")
-        self.bot.send_text(chat_id, "\n\n".join(blocks)[:3500] + "\n\n/approve N · /drop N")
+        tail = (f"\n\nJev set aside {len(noise)} as noise: " + "; ".join(p["title"][:60] for p in noise)) if noise else ""
+        self.bot.send_text(chat_id, "\n\n".join(blocks)[:3500] + tail[:400] + "\n\n/approve N · /drop N")
 
     def _pick(self, chat_id, arg):
         props = self.nb.pending()
@@ -676,6 +708,8 @@ class Herald:
             usd, n = self._today()
             cap = f" of ${self.max_usd_per_day:.2f}" if self.max_usd_per_day is not None else ""
             model = s.get("model") or (self.engine_cfg.model if self.engine_cfg else "?")
+            if self.last_route:                         # Jev sent the last message to the small model
+                model += f" (last turn: {self.last_route[0]}, Jev {self.last_route[1]:.2f})"
             self.bot.send_text(chat_id, f"stopped: {os.path.exists(self.stop_path)} · voice: {s['voice']} · "
                                         f"session: {'yes' if s['session'] else 'new'} · speak first: {why} · "
                                         f"model: {model} · today ${usd:.2f}{cap} in {n} turns")
@@ -862,7 +896,10 @@ def build(cfg, token):
                room_agents=ra, room_judge=jev.from_env() if ra else None,
                room_budget=(cfg.get("room") or {}).get("budget_usd"),
                room_roles={e["name"]: e.get("role", "ideas") for e in cfg.get("agents") or []},
-               skills_repo=(cfg.get("team_skills") or {}).get("repo"), skills_role=(cfg.get("team_skills") or {}).get("role"))
+               skills_repo=(cfg.get("team_skills") or {}).get("repo"), skills_role=(cfg.get("team_skills") or {}).get("role"),
+               jev_judge=jev.from_env() if cfg.get("jev") else None, jev_learn=(cfg.get("jev") or {}).get("learn", False),
+               route_simple=(cfg.get("jev") or {}).get("route_simple"),
+               route_bar=(cfg.get("jev") or {}).get("route_bar", ROUTE_BAR))
     return h, ecfg
 
 

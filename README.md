@@ -273,6 +273,21 @@ session dearer (about 3x for +5,000 tokens).
 - `"max_usd_per_day": 1.0` in the config stops turns and speaking first once today's spend reaches it.
 - `/model claude-haiku-5-5` switches the model from the next turn (kept across restarts); `/model default` goes back.
 - `/new` starts a fresh, cheap session when a long one gets expensive.
+- **Small messages to the small model, decided by Jev** (opt-in): with `"jev": {"route_simple": "claude-haiku-5-5"}` in
+  the config and `TYPESAFE_API_KEY` set, each message is first shown to [Jev](https://typesafe.ai) with one question —
+  can a small, fast model answer this as well? Above `route_bar` (default 0.7) the turn runs on the small model.
+  Measured live: greetings, short facts and rewording scored 0.96-0.98; refactoring, debugging, planning and
+  comparing options 0.07-0.26. Your `/model` always wins; if Jev is unreachable the configured model answers; `/status`
+  names the routed turn. **The message text goes to TypeSafe** — that is why it is off by default.
+
+## Jev in /learn: lessons, not noise (opt-in)
+
+`"jev": {"learn": true}` (bot) or `herald learn ... --jev` (command line) asks Jev of every proposal: a reusable
+lesson (a cause and a thing to do), or noise (a one-off, a coincidence, a workaround around a check, advice too general
+to act on)? Below 0.35 a proposal moves to «Jev: noise, not lessons» with its probability — not deleted, you can still
+approve it. Measured live: «re-read the file before Edit» 0.91, «write a small Python patch instead of a multi-line
+PowerShell replace» 0.80; «cd fixed it» 0.06, «be careful» 0.03, «call it again with -SkipGate» 0.06. The proposals'
+text goes to TypeSafe, so `--jev` is refused together with `--private`; in the bot the drafts are the masked ones.
 
 ## Limits, honestly
 
