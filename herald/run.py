@@ -27,6 +27,7 @@ HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
 VOICE_IN = "[voice message, transcribed]\n{}"
 HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /usage · /retry · /model NAME|default\n"
         "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
+MIN_TURN = 0.01            # claude's smallest --max-budget-usd herald passes
 NUDGE_STEPS = 8            # a turn this long probably taught something (an idea from Hermes, not its numbers)
 NUDGE_EVERY = 5
 NUDGE = "\n\n(That was a long one. /learn to keep what worked.)"
@@ -96,7 +97,7 @@ def _valid_state(s):
 
 def _command_word(t):
     """'/STOP', '/stop@my_bot', a pasted zero-width space: all the same command."""
-    word = t.translate(ZERO_WIDTH).strip().split(" ", 1)[0].lower()
+    word = (t.translate(ZERO_WIDTH).split() or [""])[0].lower()      # any whitespace: "/stop\nnow" is /stop
     return word.split("@", 1)[0]
 
 
@@ -221,13 +222,21 @@ class Herald:
         return "\n".join(lines)
 
     def _over_budget(self, extra=0.0):
-        """extra: money spent but not in the ledger yet (a room that is still talking)."""
-        return self.max_usd_per_day is not None and self._today()[0] + extra >= self.max_usd_per_day
+        """extra: money that must still fit today (the next reply a room keeps in hand). Less than MIN_TURN left
+        counts as used up: the smallest turn would cross the cap (red-team, 25.10)."""
+        return (self.max_usd_per_day is not None
+                and self._today()[0] + extra > self.max_usd_per_day - MIN_TURN + 1e-12)
 
     def _room_halt(self, r):
+        """Before every reply: the room's spend so far goes to the ledger (an ordinary turn running meanwhile sees
+        it), and the next reply's cap must still fit today (the reply that crossed the cap used to be paid)."""
         if os.path.exists(self.stop_path):
             return "stop"
-        if self._over_budget(r.spent - getattr(r, "logged", 0.0)):
+        if r.spent > getattr(r, "logged", 0.0):
+            self._room_log(r)
+        nxt = max((getattr(s.agent, "reply_cap", 0.0) or getattr(s.agent, "cost_per_call", 0.0) or 0.0
+                   for s in r.seats), default=0.0)
+        if self._over_budget(nxt):
             return "budget"
         return None
 
@@ -247,7 +256,7 @@ class Herald:
             cfg = dataclasses.replace(cfg, model=self._state()["model"])
         if self.max_usd_per_day is not None:            # a turn never gets more than today has left
             left = self.max_usd_per_day - self._today()[0]
-            cfg = dataclasses.replace(cfg, max_budget_usd=max(0.01, min(cfg.max_budget_usd, round(left, 4))))
+            cfg = dataclasses.replace(cfg, max_budget_usd=max(MIN_TURN, min(cfg.max_budget_usd, round(left, 4))))
         persona = ""
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:

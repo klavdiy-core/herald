@@ -27,7 +27,11 @@ SAFE_TOOLS = {"Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "TodoWrite"}
 FORBIDDEN_FLAGS = {"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--permission-mode",
                    "--permission-prompts", "--permission-prompt-tool", "--add-dir", "--tools", "--allowedTools",
                    "--allowed-tools", "--settings", "--setting-sources", "--mcp-config", "--plugin-dir", "--agents",
-                   "--restricted", "--resume", "-r", "--continue", "-c"}
+                   "--restricted", "--resume", "-r", "--continue", "-c",
+                   # the limits and the prompt herald sets: claude takes the LAST value of a repeated flag, and
+                   # extra_args come after herald's own (red-team audit, 25.10)
+                   "--max-budget-usd", "--max-turns", "--model", "--output-format", "--system-prompt",
+                   "--system-prompt-file", "--append-system-prompt", "--append-system-prompt-file"}
 
 ENV_ALLOW = {"PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
              "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL"}

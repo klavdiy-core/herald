@@ -10,7 +10,7 @@ TOKEN = "123456789:AAH-fake_token_value_for_tests_00000"
 HELP_OK = "  --restricted   Restricted mode...\n  --permission-prompts <target> ...\n"
 
 
-def fake_turn(actions, text="done", denials=("Read", "Read", "Read", "Grep", "Glob", "Write")):
+def fake_turn(actions, text="done", denials=("Read", "Read", "Read", "Grep", "Glob", "Write", "Write", "Write", "Edit")):
     """A run_turn stand-in: performs file actions inside cwd=workspace like a model would."""
     def run(prompt, workspace, cfg, session_id=None):
         for rel, content in actions:

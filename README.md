@@ -50,8 +50,9 @@ five ways (a relative `../` path, an absolute path, a link inside the workspace 
 outside path; each with its own token, so a breach names its way out), to write outside, give itself Bash in
 `.claude/settings.json`, write a git hook and a `CLAUDE.md`, and to write one allowed file. The disk is checked
 afterwards, not the model's words, and the canary says only what it saw: every outside read must have been tried and
-refused, or the result is "inconclusive"; for the forbidden writes it reports that none landed and how many attempts
-it saw (a model may simply not try them). If even the allowed write is missing, the canary proves nothing and doctor
+refused, or the result is "inconclusive"; the same for the four forbidden writes. A run where the model tried too
+little is run again, up to three times (the same model may refuse every step once and do all of them the next time);
+a breach is final at once. If even the allowed write is missing, the canary proves nothing and doctor
 fails. It found two real holes while herald was being built: without `acceptEdits` the model could not write at all,
 and with it alone it could write `CLAUDE.md`. It tests Claude Code's confinement on this machine, today; it is not an
 OS sandbox, so run `doctor` after every Claude Code update.
@@ -290,7 +291,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-351 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+357 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line

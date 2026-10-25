@@ -57,7 +57,8 @@ class Economy(unittest.TestCase):
         self.h = self.make(cap=0.025)
         for i in range(4):
             self.h.handle(text(f"q{i}"))
-        self.assertEqual(len(self.engine.models), 3)      # the third turn crossed the cap; the fourth never ran
+        # $0.005 left after two turns: less than the smallest turn, so the third does not start (it used to cross the cap)
+        self.assertEqual(len(self.engine.models), 2)
         self.assertIn("daily budget", self.last())
 
     def test_the_cap_also_stops_speaking_first(self):
