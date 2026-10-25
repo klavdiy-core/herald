@@ -259,21 +259,30 @@ class Herald:
         """Before every reply: the room's spend so far goes to the ledger (an ordinary turn running meanwhile sees
         it), and the next reply's cap must still fit today (the reply that crossed the cap used to be paid)."""
         if os.path.exists(self.stop_path):
-            return "stop"
-        if r.spent > getattr(r, "logged", 0.0):
             self._room_log(r)
+            return "stop"
+        self._room_log(r)                                # spend so far written, the last hold released
         nxt = max((getattr(s.agent, "reply_cap", 0.0) or getattr(s.agent, "cost_per_call", 0.0) or 0.0
                    for s in r.seats), default=0.0)
         if self._over_budget(nxt):
             return "budget"
+        if self.max_usd_per_day is not None and nxt:
+            # the next reply's cap is HELD in the ledger, so a bot turn starting meanwhile sees it (and vice versa)
+            rid = reserve(self.costs_path, nxt, self.max_usd_per_day, "room")
+            if rid is None:
+                return "budget"
+            r.hold = (rid, nxt)
         return None
 
     def _room_log(self, r):
+        """The room's new spend to the ledger, and its open hold released, in one locked step."""
         new = r.spent - getattr(r, "logged", 0.0)
-        r.logged = r.spent
-        with open(self.costs_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
-                                "usd": round(new, 6), "kind": "room", "ok": True}) + "\n")
+        rid, held = getattr(r, "hold", (None, 0.0))
+        r.logged, r.hold = r.spent, (None, 0.0)
+        if new <= 0 and not rid:
+            return
+        settle(self.costs_path, rid, held, {"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                            "usd": round(max(new, 0.0), 6), "kind": "room", "ok": True})
 
     def _route(self, prompt):
         """The small model for a message Jev judges simple; None = the configured one. The owner's /model always wins."""
@@ -379,16 +388,25 @@ class Herald:
             if hasattr(self.bot, "poll"):
                 watcher = threading.Thread(target=self._watch, args=(done,), daemon=True)
                 watcher.start()
+        cfg = self._system(prompt)
+        held = float(getattr(cfg, "max_budget_usd", 0) or 0) if self.max_usd_per_day is not None else 0.0
+        rid = reserve(self.costs_path, held, self.max_usd_per_day, "turn") if held else None
+        if held and rid is None:                      # another consumer took what was left: no paid call
+            return engine.TurnResult(False, error="today's daily budget is used up (another turn or room took "
+                                                  "what was left)")
         try:
-            r = self.run_turn(prompt, self.workspace, self._system(prompt), session_id=self._state()["session"], **kw)
+            r = self.run_turn(prompt, self.workspace, cfg, session_id=self._state()["session"], **kw)
+        except BaseException:
+            settle(self.costs_path, rid, held, {"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                                "usd": held, "ok": False, "estimated": True})
+            raise
         finally:
             done.set()
             if watcher:
                 watcher.join(timeout=5)
-        with open(self.costs_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": r.cost_usd,
-                                "context_tokens": r.context_tokens, "ok": r.ok,
-                                "estimated": bool(getattr(r, "cost_estimated", False))}) + "\n")
+        settle(self.costs_path, rid, held, {"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                            "usd": r.cost_usd, "context_tokens": r.context_tokens, "ok": r.ok,
+                                            "estimated": bool(getattr(r, "cost_estimated", False))})
         if r.ok and r.session_id:
             self._save(session=r.session_id)
         return r
@@ -633,6 +651,7 @@ class Herald:
                 self._log("room crashed:\n" + traceback.format_exc())
                 self.bot.send_text(chat_id, "The room failed; the reason is in control/audit.log.")
             finally:
+                self._room_log(r)                       # a crashed room leaves no open hold behind
                 self.room_busy = False
         if self.room_sync:
             talk()
@@ -857,8 +876,64 @@ def spent_by_day(costs_path, days=7):
     return [(d, *per[d]) for d in sorted(per, reverse=True)]
 
 
+class _LedgerLock:
+    """A lock file next to the ledger (O_EXCL), so check-and-reserve is one step across processes. Stale after 30 s."""
+
+    def __init__(self, costs_path, wait_s=10.0):
+        self.path, self.wait_s = costs_path + ".lock", wait_s
+
+    def __enter__(self):
+        end = time.time() + self.wait_s
+        while True:
+            try:
+                os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(self.path) > 30:
+                        os.remove(self.path)                 # a crashed holder: take it over
+                        continue
+                except OSError:
+                    pass
+                if time.time() > end:
+                    raise TimeoutError("ledger lock busy")
+                time.sleep(0.02)
+
+    def __exit__(self, *exc):
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+
+def reserve(costs_path, usd, cap, kind):
+    """Hold `usd` of today's cap before a paid call; the id to settle with, or None when it does not fit. The ledger
+    was read before a reply and written after it, so two consumers (the bot and a room) could both pass with a few
+    cents left and both pay a full reply (external review + Tsaplya, 25.10). Check and hold are one step now."""
+    os.makedirs(os.path.dirname(os.path.abspath(costs_path)), exist_ok=True)
+    with _LedgerLock(costs_path):
+        # the caller already cut the call to what today has left; the hold only has to fit what is left NOW
+        if cap is not None and spent_today(costs_path)[0] + usd > cap + 1e-9:
+            return None
+        rid = f"{os.getpid()}-{time.time_ns()}"
+        with open(costs_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": round(usd, 6),
+                                "kind": "reserve", "id": rid}) + "\n")
+        return rid
+
+
+def settle(costs_path, rid, usd_held, row):
+    """Release the hold and write what the call really cost (one append each; the release cancels the reserve)."""
+    with _LedgerLock(costs_path):
+        with open(costs_path, "a", encoding="utf-8") as f:
+            if rid:
+                f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
+                                    "usd": -round(usd_held, 6), "kind": "release", "id": rid}) + "\n")
+            f.write(json.dumps(row) + "\n")
+
+
 def spent_today(costs_path):
-    """(dollars, turns) in the ledger for today; damaged rows are skipped."""
+    """(dollars, turns) in the ledger for today, open holds counted in the dollars; damaged rows are skipped."""
     day, usd, n = time.strftime("%Y-%m-%d"), 0.0, 0
     if os.path.exists(costs_path):
         with open(costs_path, encoding="utf-8") as f:
@@ -866,7 +941,8 @@ def spent_today(costs_path):
                 try:
                     row = json.loads(line)
                     if row.get("day") == day:
-                        usd, n = usd + float(row.get("usd") or 0), n + 1
+                        usd += float(row.get("usd") or 0)
+                        n += 0 if row.get("kind") in ("reserve", "release") else 1
                 except (ValueError, TypeError, AttributeError):
                     continue                            # a damaged row is skipped, never a deaf bot
     return usd, n

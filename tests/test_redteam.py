@@ -96,7 +96,9 @@ class Money(Base):
         with open(os.path.join(self.control, "costs.jsonl"), encoding="utf-8") as f:
             total = sum(json.loads(l)["usd"] for l in f)
         self.assertLessEqual(total, 0.1 + 1e-9)                     # 0.04 + 0.04, and the third would cross it
-        self.assertEqual(seen[1], 0.04)                              # the first reply was in the ledger already
+        # the first reply was in the ledger already, and the second one's cap is held there while it speaks (0.5.x:
+        # holds, so a bot turn meanwhile sees it): 0.04 spent + 0.04 held
+        self.assertEqual(seen[1], 0.08)
 
 
 class Stop(Base):
