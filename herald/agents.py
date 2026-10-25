@@ -10,20 +10,27 @@ import os
 import re
 import subprocess
 
-from . import engine
+from . import engine, team_skills
 
 NAME = re.compile(r"^[A-Za-zЀ-ӿ][\w \-Ѐ-ӿ]{0,30}$")
 
 
+def _append(home, line):
+    with open(os.path.join(home, "skills.log"), "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 class ClaudeRole:
-    def __init__(self, name, character, model, workdir, claude_cmd=None, max_budget_usd=0.2):
+    def __init__(self, name, character, model, workdir, claude_cmd=None, max_budget_usd=0.2, skills_repo=None,
+                 skills_role=None):
         self.name = name
         home = os.path.join(workdir, "agents", re.sub(r"\W+", "_", name))
         self.ws = os.path.join(home, "ws")
         os.makedirs(self.ws, exist_ok=True)
+        skills = team_skills.setup(skills_repo, skills_role, self.ws, log=lambda line: _append(home, line))
         char = os.path.join(home, "character.md")
         with open(char, "w", encoding="utf-8") as f:
-            f.write(f"You are {name}. {character}".strip())
+            f.write((f"You are {name}. {character}".strip() + ("\n\n" + skills if skills else "")))
         kw = {"claude_cmd": claude_cmd} if claude_cmd else {}
         self.cfg = engine.EngineConfig(model=model, tools=["Read"], max_turns=2, max_budget_usd=max_budget_usd,
                                        timeout_s=180, append_system_prompt_file=char, **kw)
@@ -58,13 +65,13 @@ class Command:
         return out, 0.0              # an outside program's price is not known here
 
 
-def from_config(entry, workdir, claude_cmd=None):
+def from_config(entry, workdir, claude_cmd=None, skills_repo=None):
     name, kind = str(entry.get("name") or ""), entry.get("kind")
     if not NAME.match(name):
         raise ValueError(f"agent name {name!r}: letters, digits, spaces, up to 31 characters")
     if kind == "claude":
         return ClaudeRole(name, entry.get("character", ""), entry.get("model", "claude-haiku-5-5"), workdir,
-                          claude_cmd)
+                          claude_cmd, skills_repo=skills_repo, skills_role=entry.get("skills_role", name))
     if kind == "command":
         if not entry.get("command"):
             raise ValueError(f"agent {name}: a command agent needs \"command\": [program, args...]")

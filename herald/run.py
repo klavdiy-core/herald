@@ -12,10 +12,11 @@ import threading
 import time
 import traceback
 
-from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, room_web, speak_first, telegram, voice
+from . import agents, decisions, doctor, engine, hearing, jev, learning, notebook, recall, room, room_web, team_skills, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
-        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room"}
+        "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room", "team_skills"}
+SKILLS_KEYS = {"repo", "role"}
 ROOM_KEYS = {"port", "budget_usd", "pace_s"}
 MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
 VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
@@ -44,7 +45,8 @@ def load_config(path):
         if k in cfg and cfg[k] is None:
             del cfg[k]
     unknown =(set(cfg) - KEYS | set(cfg.get("voice", {})) - VOICE_KEYS | set(cfg.get("speak_first", {})) - SPEAK_KEYS
-               | set(cfg.get("hearing", {})) - HEAR_KEYS | set(cfg.get("room", {})) - ROOM_KEYS)
+               | set(cfg.get("hearing", {})) - HEAR_KEYS | set(cfg.get("room", {})) - ROOM_KEYS
+               | set(cfg.get("team_skills", {})) - SKILLS_KEYS)
     if unknown:
         raise ValueError(f"unknown config keys (refusing to guess): {sorted(unknown)}")
     if not cfg.get("owners"):
@@ -116,7 +118,8 @@ class Herald:
     def __init__(self, bot, run_turn, engine_cfg, gate, jobs, control, workspace, owners, synth=None,
                  hear=None, download=None, hear_max_bytes=10 * 1024 * 1024, transcript_roots=None,
                  max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
-                 room_sync=False, decision_ttl_s=24 * 3600, now=time.time, learn_min_sessions=2):
+                 room_sync=False, decision_ttl_s=24 * 3600, now=time.time, learn_min_sessions=2, skills_repo=None,
+                 skills_role=None):
         self.bot, self.run_turn, self.engine_cfg, self.gate, self.jobs = bot, run_turn, engine_cfg, gate, jobs
         self.control, self.workspace, self.owners, self.synth = control, workspace, owners, synth
         self.hear, self.download, self.hear_max_bytes = hear, download, hear_max_bytes
@@ -132,6 +135,8 @@ class Herald:
         self.decisions = decisions.Decisions(os.path.join(control, "decisions.json"), now, decision_ttl_s)
         self.live_rooms = {}                            # decision id -> the Room its summary buttons belong to
         self.learn_min_sessions = learn_min_sessions    # a lesson must happen in this many different sessions
+        # the team's shared skills for this role: pulled once at start, a table of contents in every system prompt
+        self.skills_toc = team_skills.setup(skills_repo, skills_role, workspace, log=self._log)
 
     # ---------- state ----------
     def _state(self):
@@ -209,7 +214,7 @@ class Herald:
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:
                 persona = f.read()
-        text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT
+        text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT + ("\n\n" + self.skills_toc if self.skills_toc else "")
         path = os.path.join(self.control, "system.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -564,7 +569,8 @@ def room_agents(cfg, claude_cmd=None):
     """{name: agent} from the config's "agents" list; each lives in control/agents/<name>/, out of the workspace."""
     out = {}
     for entry in cfg.get("agents") or []:
-        a = agents.from_config(entry, cfg["control"], claude_cmd)
+        a = agents.from_config(entry, cfg["control"], claude_cmd,
+                               skills_repo=(cfg.get("team_skills") or {}).get("repo"))
         if a.name in out:
             raise ValueError(f"two agents are named {a.name}")
         out[a.name] = a
@@ -649,7 +655,8 @@ def build(cfg, token):
                max_usd_per_day=cfg.get("max_usd_per_day"),
                room_agents=ra, room_judge=jev.from_env() if ra else None,
                room_budget=(cfg.get("room") or {}).get("budget_usd"),
-               room_roles={e["name"]: e.get("role", "ideas") for e in cfg.get("agents") or []})
+               room_roles={e["name"]: e.get("role", "ideas") for e in cfg.get("agents") or []},
+               skills_repo=(cfg.get("team_skills") or {}).get("repo"), skills_role=(cfg.get("team_skills") or {}).get("role"))
     return h, ecfg
 
 

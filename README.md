@@ -209,6 +209,14 @@ the audio is cached per reply). With `/voice both` in Telegram, a room's summary
 Checked live with four Russian piper voices (dmitri, ruslan, irina, denis): every line came back intelligible through
 speech recognition.
 
+**Team skills.** A team can keep its shared skills in a git repository: `skills/<name>/SKILL.md` (front matter with
+`name` and `description`) and `roles/<Role>.md` (one line per skill the role has, the name in backticks). With
+`"team_skills": {"repo": "path/to/clone", "role": "Raven"}` in the config (and `"skills_role"` on each room agent),
+every role pulls the repository when it starts, gets a table of contents of its own skills in its system prompt, and
+a copy of those SKILL.md files in its own folder, where its confined Read can open one when it fits. Other roles'
+skills are not given to it; a skill taken away from a role disappears from its folder; a SKILL.md without a name or
+description is skipped and logged; if the pull fails, the local copy is used.
+
 **What is confined and what is not.** A Claude role is confined like every herald turn (Claude Code's
 `--restricted`, its own empty folder, Read only). A `command` agent is an ordinary program you chose: herald only
 gives it an empty folder of its own and the same allow-listed environment as a Claude turn (no bot token, no
@@ -261,7 +269,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-273 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+283 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
