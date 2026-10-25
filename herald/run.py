@@ -19,6 +19,7 @@ KEYS = {"owners", "workspace", "control", "model", "max_turns", "max_budget_usd"
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room", "team_skills"}
 SKILLS_KEYS = {"repo", "role"}
 ROOM_KEYS = {"port", "budget_usd", "pace_s"}
+DEFAULT_ROOM_BUDGET = 0.5     # dollars per room, Telegram and browser alike, unless "room": {"budget_usd": ...} says otherwise
 MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
 VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
 SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
@@ -131,7 +132,8 @@ class Herald:
         self.persona_file = engine_cfg.append_system_prompt_file if engine_cfg else ""
         self.max_usd_per_day = max_usd_per_day
         self.costs_path = os.path.join(control, "costs.jsonl")
-        self.room_agents, self.room_judge, self.room_budget = room_agents or {}, room_judge, room_budget
+        self.room_agents, self.room_judge = room_agents or {}, room_judge
+        self.room_budget = room_budget if room_budget is not None else DEFAULT_ROOM_BUDGET   # as the browser room
         self.room_roles, self.room_sync, self.room_busy = room_roles or {}, room_sync, False
         self.decisions = decisions.Decisions(os.path.join(control, "decisions.json"), now, decision_ttl_s)
         self.live_rooms = {}                            # decision id -> the Room its summary buttons belong to
@@ -407,7 +409,8 @@ class Herald:
         folder = os.path.dirname(path)
         paths = sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".jsonl"))
         report = learning.analyze_many(paths)
-        props = [p for p in learning.propose(report, min_sessions=self.learn_min_sessions) if not self.nb.knows(p)]
+        props = [p for p in learning.propose(report, private=True, min_sessions=self.learn_min_sessions)   # names, numbers: masked
+                 if not self.nb.knows(p)]
         self.nb.set_pending(props)
         if not props:
             return self.bot.send_text(chat_id, "Nothing new: nothing repeated or corrected that is not learned already.")

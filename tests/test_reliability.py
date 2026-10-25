@@ -235,6 +235,84 @@ class NoDoubleHandling(Base):
         self.assertEqual(polled, [10])
 
 
+@unittest.skipUnless(sys.platform == "win32", "cmd.exe quoting is a Windows matter")
+class CommandAgentInjection(unittest.TestCase):
+    """Outside review, round 3 (25.10): a .cmd shim with prompt_arg went through cmd.exe, and
+    'fine & echo injected > PWNED.txt & rem' wrote PWNED.txt."""
+
+    def test_a_batch_target_with_the_prompt_in_argv_is_refused(self):
+        from herald import agents
+        with tempfile.TemporaryDirectory() as d:
+            shim = os.path.join(d, "tool.cmd")
+            with open(shim, "w") as f:
+                f.write("@echo %*\n")
+            with self.assertRaises(ValueError) as cm:
+                agents.Command("Shim", [shim], prompt_arg=True, cwd=d)
+            self.assertIn("cmd.exe", str(cm.exception))
+            # on stdin the same shim is fine: the prompt is never parsed by cmd.exe
+            a = agents.Command("Shim", [shim], prompt_arg=False, cwd=d)
+            a.speak("fine & echo injected > PWNED.txt & rem")
+            self.assertFalse(os.path.exists(os.path.join(d, "PWNED.txt")))
+
+    def test_a_batch_target_found_on_path_is_refused_too(self):
+        from herald import agents
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "shimtool.cmd"), "w") as f:
+                f.write("@echo %*\n")
+            old = os.environ["PATH"]
+            os.environ["PATH"] = d + os.pathsep + old
+            try:
+                with self.assertRaises(ValueError):
+                    agents.Command("Shim", ["shimtool"], prompt_arg=True)
+            finally:
+                os.environ["PATH"] = old
+
+
+class HardRoomBudget(unittest.TestCase):
+    """Round 3: budget 0.3 ended at 0.406 before end() and 0.606 after it."""
+
+    def room(self, cost, cap, budget):
+        from herald import room
+        from test_room import Voice
+        seats = []
+        for n in ("Raven", "Magpie"):
+            v = Voice(n, [f"{n} {i}" for i in range(20)], cost=cost)
+            v.reply_cap = cap                          # what one reply may cost at most (a claude role's cap)
+            seats.append(room.Seat(v, "ideas"))
+        return room.Room("x", seats, fmt="brainstorm", budget_usd=budget)
+
+    def test_a_reply_that_could_cross_the_budget_does_not_start(self):
+        r = self.room(cost=0.12, cap=0.2, budget=0.3)
+        while r.step():
+            pass
+        self.assertLessEqual(r.spent, 0.3)
+        self.assertEqual(len(r.messages), 1)           # 0.12 + 0.2 > 0.3: the second reply would not fit
+
+    def test_over_budget_the_summary_is_made_without_paying(self):
+        r = self.room(cost=0.12, cap=0.2, budget=0.3)
+        while r.step():
+            pass
+        before = r.spent
+        summary = r.end()
+        self.assertEqual(r.spent, before)
+        self.assertIn("Raven 0", summary)              # built from what was said
+
+    def test_agents_without_a_known_cap_still_count(self):
+        r = self.room(cost=0.12, cap=0, budget=0.3)
+        while r.step():
+            pass
+        self.assertEqual(len(r.messages), 3)           # the old rule: stop once spent reaches the budget
+
+
+class TelegramRoomAndLearn(Base):
+    def test_a_telegram_room_has_a_budget_by_default(self):
+        from herald import run
+        self.assertIsNotNone(run.Herald(bot=self.bot, run_turn=self.engine, engine_cfg=None, gate=self.h.gate,
+                                        jobs=[], control=self.control, workspace=self.workspace,
+                                        owners={OWNER}).room_budget)
+
+
+
 class FakeRoom:
     def __init__(self):
         self.topic, self.halted, self.spent, self.messages, self.ended = "x", None, 0.0, [], False

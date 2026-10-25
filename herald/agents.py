@@ -8,7 +8,9 @@ A participant that fails says so in its reply; it never takes the room down.
 """
 import os
 import re
+import shutil
 import subprocess
+import sys
 
 from . import engine, team_skills
 
@@ -32,6 +34,7 @@ class ClaudeRole:
         with open(char, "w", encoding="utf-8") as f:
             f.write((f"You are {name}. {character}".strip() + ("\n\n" + skills if skills else "")))
         kw = {"claude_cmd": claude_cmd} if claude_cmd else {}
+        self.reply_cap = max_budget_usd               # a room keeps this much in hand before letting it speak
         self.cfg = engine.EngineConfig(model=model, tools=["Read"], max_turns=2, max_budget_usd=max_budget_usd,
                                        timeout_s=180, append_system_prompt_file=char, **kw)
 
@@ -44,6 +47,14 @@ class Command:
     def __init__(self, name, command, timeout_s=180, prompt_arg=False, cwd=None, pass_env=()):
         self.name, self.command, self.timeout_s = name, list(command), timeout_s
         self.prompt_arg, self.cwd = prompt_arg, cwd    # some CLIs take the question as an argument, not on stdin
+        if prompt_arg and sys.platform == "win32":
+            # a .cmd/.bat runs through cmd.exe, which parses & | > in its arguments: the prompt (which other agents
+            # and the owner write) would run as commands. There is no safe quoting for cmd.exe, so it is refused.
+            target = shutil.which(self.command[0]) or self.command[0]
+            if os.path.splitext(target)[1].lower() in (".cmd", ".bat"):
+                raise ValueError(f"agent {name}: {target} is a batch file, so its arguments go through cmd.exe; "
+                                 "with prompt_arg the prompt would be run as commands. Point it at the real .exe, "
+                                 "or drop prompt_arg and send the prompt on stdin")
         # an outside program gets the same allow-listed environment as a claude turn: no bot token, no Jev key;
         # a CLI that needs its own key names it in "pass_env"
         keep = engine.ENV_ALLOW | {k.upper() for k in pass_env}

@@ -133,6 +133,22 @@ class Telegram(unittest.TestCase):
     def last(self):
         return self.bot.texts[-1][1]
 
+    def test_learn_from_telegram_is_private(self):
+        # outside review round 3 (25.10): /learn copied a person's name and phone number into the proposals
+        seen = {}
+        real = run.learning.propose
+
+        def spy(report, private=False, **k):
+            seen["private"] = private
+            return real(report, private=private, **k)
+        run.learning.propose = spy
+        try:
+            self.h.handle(text("go"))
+            self.h.handle(text("/learn"))
+        finally:
+            run.learning.propose = real
+        self.assertTrue(seen.get("private"), seen)
+
     def test_learn_shows_what_would_be_kept(self):
         self.h.handle(text("go"))
         self.h.handle(text("/learn"))

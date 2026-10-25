@@ -115,6 +115,12 @@ class Room:
         self.spent += float(cost or 0)
         return (text or "").strip()
 
+    def _reserve(self):
+        """What one more reply may cost at most (the largest per-reply cap at the table; 0 when not known).
+        A reply starts only if it fits: the budget used to be checked against what was already spent, so the last
+        reply always went over it."""
+        return max((float(getattr(s.agent, "reply_cap", 0) or 0) for s in self.seats), default=0.0)
+
     def step(self):
         """One reply. False when paused, closed or out of budget."""
         if self.paused or self.closed or self.halted:
@@ -124,7 +130,8 @@ class Room:
             self.halted = why
             self._emit("halted", reason=why, spent=round(self.spent, 4))
             return False
-        if self.budget is not None and self.spent >= self.budget:
+        if self.budget is not None and (self.spent >= self.budget
+                                        or self.spent + self._reserve() > self.budget + 1e-9):
             if not self.over:
                 self.over = True
                 self._emit("budget", spent=round(self.spent, 4), budget=self.budget)
@@ -178,7 +185,16 @@ class Room:
         self.closed = True
         agent = summarizer or next((s.agent for s in self.seats if s.role == "moderator"), self.seats[0].agent)
         said = "\n".join(f"{m['speaker']} ({m['role']}): {m['text']}" for m in self.messages if not m["held"])
-        summary = self._say(agent, f"Topic: \"{self.topic}\".\n\n{said}\n\n{SUMMARY}")
+        if self.budget is not None and self.spent + self._reserve() > self.budget + 1e-9:
+            # no money left for a paid summary: the last word of each speaker, free, and said so
+            last = {}
+            for m in self.messages:
+                if not m["held"]:
+                    last[m["speaker"]] = m["text"]
+            summary = ("(the room's budget is used up, so this is not a written summary: the last word of each "
+                       "speaker)\n" + "\n".join(f"- {who}: {t[:300]}" for who, t in last.items()))
+        else:
+            summary = self._say(agent, f"Topic: \"{self.topic}\".\n\n{said}\n\n{SUMMARY}")
         self._emit("summary", text=summary, spent=round(self.spent, 4))
         if self.record_dir:
             os.makedirs(self.record_dir, exist_ok=True)
