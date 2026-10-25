@@ -174,10 +174,17 @@ class Store(unittest.TestCase):
         self.assertEqual(body.count("## `err A`"), 1)
         self.assertIn("fix B", body)
 
+    @unittest.skipUnless(os.name == "nt", "a Windows path is only absolute on Windows")
     def test_mangle_matches_claude_code(self):
-        # seen live 24.10 on claude 2.1.310: every character that is not a letter or digit becomes '-'
+        # seen live 24.10 on claude 2.1.310: every character that is not a letter or digit becomes '-'.
+        # On Linux abspath() puts the current folder in front of a Windows path, so this case is Windows-only
+        # (an external review ran it on Linux: 1 of 371 failed)
         self.assertEqual(notebook.mangle(r"C:\Users\me\AppData\Local\Temp\x_y.z"),
                          "C--Users-me-AppData-Local-Temp-x-y-z")
+
+    @unittest.skipIf(os.name == "nt", "a POSIX path is not absolute on Windows")
+    def test_mangle_on_posix(self):
+        self.assertEqual(notebook.mangle("/home/me/x_y.z"), "-home-me-x-y-z")
 
 
 class Cli(unittest.TestCase):
