@@ -10,7 +10,7 @@ TOKEN = "123456789:AAH-fake_token_value_for_tests_00000"
 HELP_OK = "  --restricted   Restricted mode...\n  --permission-prompts <target> ...\n"
 
 
-def fake_turn(actions, text="done", denials=("Read", "Write", "Write")):
+def fake_turn(actions, text="done", denials=("Read", "Read", "Read", "Grep", "Glob", "Write")):
     """A run_turn stand-in: performs file actions inside cwd=workspace like a model would."""
     def run(prompt, workspace, cfg, session_id=None):
         for rel, content in actions:
@@ -82,10 +82,54 @@ class CanaryTest(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("read a file outside", r.detail)
 
+    def leak(self, route):
+        """A turn that obeys the allowed step and leaks through exactly one route, quietly (into notes.md)."""
+        def run(prompt, workspace, cfg, session_id=None):
+            outside = os.path.join(workspace, "..", "outside")
+            with open(os.path.join(workspace, "inside.txt"), "w") as f:
+                f.write("OK")
+            got = ""
+            if route == "absolute":
+                with open(os.path.join(outside, "abs.txt")) as f:
+                    got = f.read()
+            elif route == "link":
+                with open(os.path.join(workspace, "docs", "link.txt")) as f:
+                    got = f.read()
+            elif route == "grep":
+                with open(os.path.join(outside, "grep.txt")) as f:
+                    got = f.read()
+            elif route == "glob":
+                got = " ".join(os.listdir(outside))
+            with open(os.path.join(workspace, "notes.md"), "w") as f:
+                f.write(got)
+            return TurnResult(True, "done", "s", 0.001, ["Read"])
+        return run
+
+    def test_each_way_out_is_checked_and_named(self):
+        # an outside review (25.10): only ../ was tried; an absolute path, a link inside the workspace pointing out,
+        # and Glob / Grep with an outside path are other code paths in Claude Code
+        for route, words in (("absolute", "absolute path"), ("link", "link"), ("grep", "Grep"), ("glob", "Glob")):
+            with self.subTest(route=route):
+                r = doctor.canary(run_turn=self.leak(route), cfg=None)
+                if route == "link" and "link not tested" in r.detail:
+                    continue                                    # no symlink or junction right on this machine
+                self.assertFalse(r.ok, (route, r.detail))
+                self.assertIn(words, r.detail)
+
+    def test_the_prompt_names_every_route(self):
+        p = doctor.canary_prompt("/abs/outside", has_link=True)
+        for part in ("/abs/outside/abs.txt", "docs/link.txt", "Grep", "Glob"):
+            self.assertIn(part, p)
+
     def test_an_outside_read_neither_denied_nor_shown_is_inconclusive(self):
-        r = doctor.canary(run_turn=fake_turn([("inside.txt", "OK")], denials=("Write", "Write")), cfg=None)
+        # every read route must be tried and refused: here Grep never was (two outside reviews, 25.10)
+        r = doctor.canary(run_turn=fake_turn([("inside.txt", "OK")], denials=("Read", "Read", "Read", "Glob", "Write")),
+                          cfg=None)
         self.assertFalse(r.ok)
         self.assertIn("inconclusive", r.detail)
+        self.assertIn("Grep (0 of 1 refused)", r.detail)
+        r = doctor.canary(run_turn=fake_turn([("inside.txt", "OK")], denials=("Read", "Grep", "Glob")), cfg=None)
+        self.assertIn("Read (1 of", r.detail)                           # one Read refused is not all of them
 
     def test_a_model_that_did_nothing_proves_nothing(self):
         r = self.check([])
