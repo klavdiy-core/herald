@@ -107,6 +107,18 @@ BUTTONS_HINT = ("When the owner should pick between a few concrete options, end 
                 "the owner's pick comes back to you as the next message.")
 
 
+REMEMBER = re.compile(r"\[\[\s*remember\s*:\s*([^\]]+?)\s*\]\]\n?", re.I)
+REMEMBER_HINT = ("If you learned something worth keeping across conversations (a fact about this owner's setup, a "
+                 "fix that worked), add a line [[remember: one short sentence]] to your answer (at most 3). The "
+                 "owner sees each as a Keep / Drop button; nothing is kept unless they tap Keep.")
+
+
+def _remembers(text):
+    """'[[remember: X]]' anywhere in an answer -> (text without them, ['X', ...]): at most 3, each capped."""
+    notes = [" ".join(m.group(1).split())[:300] for m in REMEMBER.finditer(text)][:3]
+    return (REMEMBER.sub("", text).rstrip() or text), [n for n in notes if n]
+
+
 def _choices(text):
     """'...\\n[[choices: A | B]]' at the end of an answer -> (text without it, ['A', 'B']); up to 5 options."""
     m = CHOICES.search(text)
@@ -240,7 +252,7 @@ class Herald:
         if self.persona_file and os.path.exists(self.persona_file):
             with open(self.persona_file, encoding="utf-8") as f:
                 persona = f.read()
-        text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT + ("\n\n" + self.skills_toc if self.skills_toc else "")
+        text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT + "\n" + REMEMBER_HINT + ("\n\n" + self.skills_toc if self.skills_toc else "")
         path = os.path.join(self.control, "system.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -351,7 +363,8 @@ class Herald:
     def _answer(self, chat_id, r, heard=None):
         if not r.ok:
             return self.bot.send_text(chat_id, f"That turn failed: {r.error}")
-        answer, options = _choices(r.text or "(empty answer)")
+        answer, notes = _remembers(r.text or "(empty answer)")
+        answer, options = _choices(answer)
         shown = (f"heard: {heard}\n\n{answer}" if heard is not None else answer) + self._nudge(r)
         if options:                                     # the model offered choices: they become buttons
             did = self.decisions.offer(answer[-500:], options)
@@ -359,6 +372,13 @@ class Herald:
                                   + [("Postpone", f"d:{did}:p")])
         else:
             self._reply(chat_id, shown, spoken=answer)
+        known = set(self.nb.memory())
+        for note in notes:                              # proposed by the model, kept only on the owner's tap
+            line = f"- {note}"
+            if line in known:
+                continue
+            did = self.decisions.offer(note, ["Keep", "Drop"], kind="remember", meta={"line": line})
+            self.bot.send_buttons(chat_id, f"Remember this?\n{note}", [("Keep", f"d:{did}:0"), ("Drop", f"d:{did}:1")])
 
     def _toast(self, callback_id, text):
         """The spinner and its toast are cosmetic: a late tap ("query is too old") must not cost the choice itself,
@@ -378,6 +398,14 @@ class Herald:
         if outcome != "chosen":
             return self._toast(m.callback_id, say[outcome])
         self._toast(m.callback_id, f"Chosen: {d['choice']}")
+        if d["kind"] == "remember":                     # no turn: keeping a line costs nothing
+            if d["choice"] != "Keep":
+                return self.bot.send_text(m.chat_id, "Dropped; not kept.")
+            try:
+                self.nb.add_memory(d["meta"]["line"])
+            except notebook.Full as e:
+                return self.bot.send_text(m.chat_id, str(e))
+            return self.bot.send_text(m.chat_id, "Kept in memory (/memory to see it, /forget N to drop it).")
         if d["kind"] == "room":
             return self._room_choice(m.chat_id, d)
         if os.path.exists(self.stop_path) or self._over_budget():

@@ -104,6 +104,11 @@ approved memory and skills in its system prompt. `/memory` shows what it keeps, 
 `/forget skill-name` takes a skill out (it is archived, not deleted). The store lives in `control/learned/`, where the model cannot write:
 it learns nothing you did not approve. After a long turn it reminds you once: "/learn to keep what worked".
 
+**It can also ask, mid-conversation.** When Claude notices something worth keeping (a fact about your setup, a fix
+that worked), it adds `[[remember: one sentence]]` to its answer. You see that line as a "Remember this?" message
+with Keep / Drop buttons, not as raw text; Keep adds it to memory (no turn, no cost), Drop forgets it. At most three
+per answer, each capped at 300 characters, and a line already in memory is not offered again.
+
 **A lesson is a cause, not a neighbour.** A step that merely came after a failure is not proposed as its fix.
 Each candidate is judged:
 - a **cause**: the fix touched what failed (read or rewrote the same file, installed the missing module, ran the same
@@ -274,7 +279,7 @@ session dearer (about 3x for +5,000 tokens).
 python -m unittest discover -s tests
 ```
 
-328 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
+334 tests against a fake `claude`, a fake Bot API, a fake `piper` and a fake speech-to-text; each module was also checked with planted
 breaks (the tests must go red). Live: the canary, a two-turn `--resume` smoke, an end-to-end run with a real Claude turn
 and a real voice message out through a fake Bot API, and a voice message in (real piper voice, real faster-whisper)
 followed by a typed question in the same session; the learning loop with a real turn (an approved memory line
