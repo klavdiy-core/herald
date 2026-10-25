@@ -18,7 +18,9 @@ class Usage(Base):
 
     def test_usage_shows_today_against_the_cap_and_the_last_days(self):
         today = time.strftime("%Y-%m-%d")
-        yesterday = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+        # the calendar day before, not now - 86400 s: on the day clocks go back (25 h) that was still today after 23:00
+        import datetime
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         self.h.max_usd_per_day = 2.0
         self.ledger([{"day": yesterday, "usd": 0.5, "ok": True},
                      {"day": today, "usd": 0.25, "ok": True},

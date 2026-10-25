@@ -50,6 +50,56 @@ class DailyHold(unittest.TestCase):
             pass
 
 
+class RoomHolds(unittest.TestCase):
+    """should_stop is also polled as should_abort while a reply runs: a hold must be placed once per reply, not per
+    poll; the browser room (room_guard) holds too."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = {"control": self.tmp.name, "max_usd_per_day": 1.0,
+                    "agents": [{"name": "a", "max_budget_usd": 0.3}, {"name": "b", "max_budget_usd": 0.2}]}
+        self.costs = os.path.join(self.tmp.name, "costs.jsonl")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rows(self):
+        if not os.path.exists(self.costs):
+            return []
+        return [json.loads(x) for x in open(self.costs, encoding="utf-8") if x.strip()]
+
+    def test_room_guard_holds_once_per_reply_and_settles_on_spend(self):
+        should_stop, on_spend = run.room_guard(self.cfg)
+        for _ in range(50):                                                   # polls during one reply
+            self.assertIsNone(should_stop())
+        self.assertEqual(sum(1 for r in self.rows() if r.get("kind") == "reserve"), 1)
+        self.assertAlmostEqual(run.spent_today(self.costs)[0], 0.3)           # the biggest cap is held
+        on_spend(0.05)
+        self.assertAlmostEqual(run.spent_today(self.costs)[0], 0.05)
+
+    def test_the_bot_room_holds_once_while_a_reply_is_polled(self):
+        from types import SimpleNamespace
+        fake = SimpleNamespace(stop_path=os.path.join(self.tmp.name, "STOP"), costs_path=self.costs,
+                               max_usd_per_day=1.0)
+        fake._room_log = lambda r: run.Herald._room_log(fake, r)
+        fake._over_budget = lambda extra=0.0: False
+        seat = SimpleNamespace(agent=SimpleNamespace(reply_cap=0.3))
+        r = SimpleNamespace(spent=0.0, logged=0.0, seats=[seat])
+        for _ in range(50):                                                   # before the reply, then polls during it
+            self.assertIsNone(run.Herald._room_halt(fake, r))
+        self.assertEqual(sum(1 for x in self.rows() if x.get("kind") == "reserve"), 1)
+        r.spent = 0.1                                                         # the reply is paid; the next one holds anew
+        run.Herald._room_halt(fake, r)
+        self.assertEqual(sum(1 for x in self.rows() if x.get("kind") == "reserve"), 2)
+        self.assertAlmostEqual(run.spent_today(self.costs)[0], 0.1 + 0.3)
+
+    def test_room_guard_refuses_when_the_hold_does_not_fit(self):
+        with open(self.costs, "w", encoding="utf-8") as f:
+            f.write(_row(0.8, ok=True))                                       # 0.2 left, the next reply may cost 0.3
+        should_stop, _ = run.room_guard(self.cfg)
+        self.assertEqual(should_stop(), "budget")
+
+
 class HoldReview(unittest.TestCase):
     """Tsaplya's second review of c78a20e."""
 

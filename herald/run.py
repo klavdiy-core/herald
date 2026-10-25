@@ -261,6 +261,10 @@ class Herald:
         if os.path.exists(self.stop_path):
             self._room_log(r)
             return "stop"
+        # this is also should_abort, polled while a reply runs: with a hold standing and nothing new spent, it stands
+        # (0.23.2 released and re-held on every poll: two ledger rows each time)
+        if getattr(r, "hold", (None, 0.0))[0] and r.spent <= getattr(r, "logged", 0.0):
+            return None
         self._room_log(r)                                # spend so far written, the last hold released
         nxt = max((getattr(s.agent, "reply_cap", 0.0) or getattr(s.agent, "cost_per_call", 0.0) or 0.0
                    for s in r.seats), default=0.0)
@@ -858,7 +862,8 @@ def room_agents(cfg, claude_cmd=None):
 
 def spent_by_day(costs_path, days=7):
     """[(day, dollars, turns, estimated)] for the last `days` days that have rows, newest first; damaged rows skipped."""
-    first = time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
+    import datetime                                     # calendar days: a 25-hour day (clocks back) shifted N*86400 s
+    first = (datetime.date.today() - datetime.timedelta(days=days - 1)).strftime("%Y-%m-%d")
     per = {}
     if os.path.exists(costs_path):
         with open(costs_path, encoding="utf-8") as f:
@@ -976,15 +981,31 @@ def room_guard(cfg):
     costs, stop, cap = os.path.join(cfg["control"], "costs.jsonl"), os.path.join(cfg["control"], "STOP"), \
         cfg.get("max_usd_per_day")
 
+    # the next reply's cap is held before it starts, like the bot's room; once per reply (should_stop is also polled
+    # as should_abort while the reply runs), released when its spend is written
+    nxt = max((float(a.get("max_budget_usd") or 0) for a in cfg.get("agents") or []), default=0.0)
+    hold = [None, 0.0]
+
     def should_stop():
         if os.path.exists(stop):
             return "stop"
-        return "budget" if cap is not None and spent_today(costs)[0] >= cap else None
+        if cap is None:
+            return None
+        if hold[0]:
+            return None                                 # a hold stands for the reply in progress
+        if not nxt:
+            return "budget" if spent_today(costs)[0] >= cap else None
+        rid = reserve(costs, nxt, cap, "room")
+        if rid is None:
+            return "budget"
+        hold[:] = [rid, nxt]
+        return None
 
     def on_spend(usd):
-        with open(costs, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
-                                "usd": round(usd, 6), "kind": "room", "ok": True}) + "\n")
+        row = {"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": round(usd, 6),
+               "kind": "room", "ok": True}
+        settle(costs, hold[0], hold[1], row)
+        hold[:] = [None, 0.0]
     return should_stop, on_spend
 
 
