@@ -209,7 +209,7 @@ goal-keeper, moderator, or your own words), a format and a budget, then watch th
 
 Every participant speaks in its own voice and sees what the others said. You can pause, say something into the room,
 choose who speaks next, ask to go deeper on a point, add a round, or end it: a summary comes back and the whole
-discussion is saved under `control/rooms/`. Money is counted per reply and the room stops at its budget. A reply sent back by the moderator to be rephrased is a paid reply too: it starts only if it fits, otherwise the reply is held back and the room says why (found by an external review, fixed in <commit>).
+discussion is saved under `control/rooms/`. Money is counted per reply and the room stops at its budget. A reply sent back by the moderator to be rephrased is a paid reply too: it starts only if it fits, otherwise the reply is held back and the room says why (found by an external review, fixed in a3c8c98).
 
 **No attacks, enforced, not hoped for.** With `TYPESAFE_API_KEY` set, [Jev](https://typesafe.ai) (a model that
 answers narrow questions with a probability) checks every reply: an attack on a person is sent back once to be said
