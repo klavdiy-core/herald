@@ -57,6 +57,17 @@ fails. It found two real holes while herald was being built: without `acceptEdit
 and with it alone it could write `CLAUDE.md`. It tests Claude Code's confinement on this machine, today; it is not an
 OS sandbox, so run `doctor` after every Claude Code update.
 
+A boundary audit (three independent read-only reviews, 25.10.2026) found six ways around the box; each is closed with
+a test that was red before:
+- control/ inside the workspace on a first start, through letter case on Windows (`C:/h/WS` vs `C:/h/ws/control`):
+  the check now compares paths case-insensitively.
+- a `persona_file` or `agents_dir` inside the workspace let the model rewrite system prompts: refused at start.
+- the speech-to-text and voice programs inherited herald's whole environment, bot token and Jev key included: they
+  now get the same allow-list as a claude turn (plus GPU and model-cache variables, and their own `"pass_env"`).
+- `/learn` showed 400 characters of a proposal while `/approve` kept all of it: a cut proposal now waits for `/show N`.
+- a `/stop` that came during a room's last reply still bought a paid summary, and a running room reply was not
+  killed by `/stop`: both now hold.
+
 ## Telegram
 
 - Only your private chat is heard: the chat id must equal the sender id and be in `owners`. Strangers, groups, edits

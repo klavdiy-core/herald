@@ -84,6 +84,18 @@ def build_argv(cfg, session_id=None):
     return argv + list(cfg.extra_args)
 
 
+# speech and voice programs (owner-chosen: whisper, piper, ffmpeg) need their GPU and model-cache variables, never
+# the bot token or the Jev key — they used to get herald's whole environment (boundary audit 25.10, F4)
+MEDIA_ENV = {"CUDA_PATH", "CUDA_VISIBLE_DEVICES", "HF_HOME", "XDG_CACHE_HOME", "TORCH_HOME", "PIPER_VOICES"}
+
+
+def media_env(pass_env=()):
+    keep = ENV_ALLOW | MEDIA_ENV | {k.upper() for k in pass_env}
+    env = {k: v for k, v in os.environ.items() if k.upper() in keep}
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def child_env(cfg):
     keep = ENV_ALLOW | set(cfg.pass_env)
     env = {k: v for k, v in os.environ.items() if k.upper() in keep}

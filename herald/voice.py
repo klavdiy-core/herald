@@ -26,6 +26,7 @@ class VoiceConfig:
     timeout_s: float = 60
     link_word: str = "link"            # what a URL is read as; "ссылка" for a Russian voice
     code_words: str = "(code skipped)"
+    pass_env: list = field(default_factory=list)      # variables piper/ffmpeg need beyond the allow-list
 
 
 def clean_for_speech(text, link_word="link", code_words="(code skipped)"):
@@ -44,9 +45,10 @@ def speakable(text):
     return 0 < len(clean) < MAX_CHARS
 
 
-def _run(argv, timeout, what, **kw):
+def _run(argv, timeout, what, pass_env=(), **kw):
+    from .engine import media_env                       # piper reads the model's text: no bot token, no Jev key (F4)
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=timeout, **kw)
+        r = subprocess.run(argv, capture_output=True, timeout=timeout, env=media_env(pass_env), **kw)
     except subprocess.TimeoutExpired:
         raise VoiceError(f"{what}: timeout after {timeout:g}s") from None
     except OSError as e:
@@ -67,9 +69,10 @@ def synth(text, out_ogg, cfg):
     tmp_ogg = out_ogg + ".part"
     try:
         _run(list(cfg.piper_cmd) + ["-m", cfg.model, "-f", wav, "--length-scale", str(cfg.length_scale)],
-             cfg.timeout_s, "piper", input=clean_for_speech(text, cfg.link_word, cfg.code_words).encode("utf-8"))
+             cfg.timeout_s, "piper", pass_env=cfg.pass_env,
+             input=clean_for_speech(text, cfg.link_word, cfg.code_words).encode("utf-8"))
         _run([cfg.ffmpeg, "-v", "error", "-y", "-i", wav, "-ac", "1", "-ar", "48000", "-c:a", "libopus",
-              "-b:a", "32k", "-f", "ogg", tmp_ogg], cfg.timeout_s, "ffmpeg")
+              "-b:a", "32k", "-f", "ogg", tmp_ogg], cfg.timeout_s, "ffmpeg", pass_env=cfg.pass_env)
         os.replace(tmp_ogg, out_ogg)
         return out_ogg
     finally:

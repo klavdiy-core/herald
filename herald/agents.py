@@ -37,9 +37,11 @@ class ClaudeRole:
         self.reply_cap = max_budget_usd               # a room keeps this much in hand before letting it speak
         self.cfg = engine.EngineConfig(model=model, tools=["Read"], max_turns=2, max_budget_usd=max_budget_usd,
                                        timeout_s=180, append_system_prompt_file=char, **kw)
+        self.should_abort = None                      # set by the room: /stop kills a reply already running (F6)
 
     def speak(self, prompt):
-        r = engine.run_turn(prompt, self.ws, self.cfg)
+        kw = {"should_abort": self.should_abort} if self.should_abort else {}
+        r = engine.run_turn(prompt, self.ws, self.cfg, **kw)
         return (r.text if r.ok else f"({self.name} could not answer: {r.error})"), r.cost_usd
 
 

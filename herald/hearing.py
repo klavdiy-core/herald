@@ -21,11 +21,14 @@ class HearConfig:
     stt_cmd: list = field(default_factory=lambda: [sys.executable, STT])
     timeout_s: float = 120
     max_mb: float = 10
+    pass_env: list = field(default_factory=list)      # variables this program needs beyond the allow-list
 
 
 def transcribe(audio_path, cfg):
+    from .engine import media_env                       # the allow-listed environment: no bot token, no Jev key
     try:
-        r = subprocess.run(list(cfg.stt_cmd) + [audio_path], capture_output=True, timeout=cfg.timeout_s)
+        r = subprocess.run(list(cfg.stt_cmd) + [audio_path], capture_output=True, timeout=cfg.timeout_s,
+                           env=media_env(cfg.pass_env))
     except subprocess.TimeoutExpired:
         raise HearingError(f"speech-to-text: timeout after {cfg.timeout_s:g}s") from None
     except OSError as e:

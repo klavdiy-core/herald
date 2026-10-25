@@ -55,6 +55,10 @@ class Room:
         self.paused, self.forced, self.focus, self.closed, self.over = False, None, None, False, False
         self.record_path = None
         self.should_stop, self.halted = should_stop, None   # should_stop() -> a reason ("stop", "budget") or None
+        if should_stop:                       # /stop also kills a claude reply already running (boundary audit, F6)
+            for s in self.seats:
+                if hasattr(s.agent, "should_abort"):
+                    s.agent.should_abort = lambda: bool(self.should_stop())
 
     # ---------- events ----------
     def listen(self, fn):
@@ -185,7 +189,16 @@ class Room:
         self.closed = True
         agent = summarizer or next((s.agent for s in self.seats if s.role == "moderator"), self.seats[0].agent)
         said = "\n".join(f"{m['speaker']} ({m['role']}): {m['text']}" for m in self.messages if not m["held"])
-        if self.budget is not None and self.spent + self._reserve() > self.budget + 1e-9:
+        # a stop that came during the last reply still holds: no paid summary after /stop (boundary audit 25.10, F5)
+        stopped = self.halted or (self.should_stop() if self.should_stop else None)
+        if stopped:
+            last = {}
+            for m in self.messages:
+                if not m["held"]:
+                    last[m["speaker"]] = m["text"]
+            summary = (f"(the room was stopped ({stopped}), so this is not a written summary: the last word of each "
+                       "speaker)\n" + "\n".join(f"- {who}: {t[:300]}" for who, t in last.items()))
+        elif self.budget is not None and self.spent + self._reserve() > self.budget + 1e-9:
             # no money left for a paid summary: the last word of each speaker, free, and said so
             last = {}
             for m in self.messages:

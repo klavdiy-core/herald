@@ -1,7 +1,7 @@
 """The daemon: Telegram in, one confined Claude Code turn, text (and maybe voice) out; plus speaking first.
 
 Two roots: `control/` (config, state, STOP, never given to the model) and `workspace/` (the model's cwd).
-Owner commands: /stop /resume /new /voice off|voice|both /status /usage /retry; learning: /learn /approve /drop /memory /forget.
+Owner commands: /stop /resume /new /voice off|voice|both /status /usage /retry; learning: /learn /show /approve /drop /memory /forget.
 """
 import dataclasses
 import inspect
@@ -24,12 +24,13 @@ ROUTE_BAR = 0.7          # Jev's probability that a small model is enough, befor
 ROOM_KEYS = {"port", "budget_usd", "pace_s"}
 DEFAULT_ROOM_BUDGET = 0.5     # dollars per room, Telegram and browser alike, unless "room": {"budget_usd": ...} says otherwise
 MODEL_NAME = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{2,40}$")
-VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale"}
+VOICE_KEYS = {"model", "piper_cmd", "link_word", "length_scale", "pass_env"}
 SPEAK_KEYS = {"enabled", "per_day", "min_gap_min", "quiet", "max_unanswered"}
-HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb"}
+HEAR_KEYS = {"stt_cmd", "timeout_s", "max_mb", "pass_env"}
 VOICE_IN = "[voice message, transcribed]\n{}"
 HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /usage · /retry · /model NAME|default\n"
-        "/learn · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
+        "/learn · /show N · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
+LEARN_SHOWN = 3400       # characters of proposals one /learn message shows; the rest waits for /show N
 MIN_TURN = 0.01            # claude's smallest --max-budget-usd herald passes
 NUDGE_STEPS = 8            # a turn this long probably taught something (an idea from Hermes, not its numbers)
 NUDGE_EVERY = 5
@@ -87,10 +88,23 @@ def load_config(path):
             cfg[k] = os.path.abspath(cfg[k])
     if (cfg.get("voice") or {}).get("model"):
         cfg["voice"]["model"] = os.path.abspath(cfg["voice"]["model"])
-    ws, ctl = os.path.realpath(cfg["workspace"]), os.path.realpath(cfg["control"])
-    if ws == ctl or ws.startswith(ctl + os.sep) or ctl.startswith(ws + os.sep):
+    # normcase: on Windows «C:/h/WS» and «C:/h/ws/control» are one tree, and before the folders exist realpath keeps
+    # the case as written — control/ was created inside the workspace on a first start (boundary audit 25.10, F1)
+    ws, ctl = (os.path.normcase(os.path.realpath(cfg[k])) for k in ("workspace", "control"))
+    if _within(ws, ctl) or _within(ctl, ws):
         raise ValueError("workspace and control must be separate folders, neither inside the other")
+    # the persona and the room agents' homes feed system prompts: never where the model can write (F3)
+    for k in ("persona_file", "agents_dir"):
+        if cfg.get(k):
+            cfg[k] = os.path.abspath(cfg[k])
+            if _within(os.path.normcase(os.path.realpath(cfg[k])), ws):
+                raise ValueError(f"{k} must be outside the workspace: the model could rewrite it")
     return cfg
+
+
+def _within(path, root):
+    """path is root or inside it (both already normcased and real)."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
@@ -526,17 +540,39 @@ class Herald:
         noise = []
         if self.jev_learn and self.jev_judge:          # the owner turned the sieve on: masked drafts go to TypeSafe
             props, noise = learning.jev_sift(props, self.jev_judge)
-        self.nb.set_pending(props)
         if not props:
+            self.nb.set_pending(props)
             return self.bot.send_text(chat_id, "Nothing new: nothing repeated or corrected that is not learned already.")
-        blocks = []
+        blocks, used = [], 0
         for i, p in enumerate(props, 1):                       # the text that would be kept, not only a title
             name = re.match(r"---\nname: (\S+)", p["draft"]) if p["kind"] == "skill" else None
             body = re.sub(r"(?s)^---.*?---\s*", "", p["draft"]).strip()
-            blocks.append(f"{i}. [{p['kind']}] {(name.group(1) + ': ') if name else ''}{p['title']}\n"
-                          f"{body[:400]}{' …' if len(body) > 400 else ''}")
+            head = f"{i}. [{p['kind']}] {(name.group(1) + ': ') if name else ''}{p['title']}\n"
+            whole = head + body
+            # what /approve keeps must be what the owner read: a cut proposal waits for /show N (boundary audit, F2)
+            if len(body) <= 400 and used + len(whole) <= LEARN_SHOWN:
+                p["seen"] = True
+                block = whole
+            else:
+                p["seen"] = False
+                block = head + body[:400] + f" … (+{max(0, len(body) - 400)} chars: /show {i} before /approve)"
+            if used + len(block) > LEARN_SHOWN:
+                block = head + f"(not shown: /show {i})"
+            blocks.append(block)
+            used += len(block) + 2
+        self.nb.set_pending(props)
         tail = (f"\n\nJev set aside {len(noise)} as noise: " + "; ".join(p["title"][:60] for p in noise)) if noise else ""
-        self.bot.send_text(chat_id, "\n\n".join(blocks)[:3500] + tail[:400] + "\n\n/approve N · /drop N")
+        self.bot.send_text(chat_id, "\n\n".join(blocks) + tail[:400] + "\n\n/show N · /approve N · /drop N")
+
+    def _show(self, chat_id, arg):
+        props, n = self._pick(chat_id, arg)
+        if not props:
+            return
+        draft = props[n - 1]["draft"]
+        for k in range(0, len(draft), 3500):                   # the whole text, in Telegram-sized parts
+            self.bot.send_text(chat_id, (f"{n}. " if k == 0 else "") + draft[k:k + 3500])
+        props[n - 1]["seen"] = True
+        self.nb.set_pending(props)
 
     def _pick(self, chat_id, arg):
         props = self.nb.pending()
@@ -551,6 +587,8 @@ class Herald:
         if not props:
             return
         p = props[n - 1]
+        if p.get("seen") is False:
+            return self.bot.send_text(chat_id, f"Read {n} whole first: /show {n}. Only what you have read is kept.")
         try:
             what = self.nb.add_skill(p["draft"]) if p["kind"] == "skill" else self.nb.add_memory(p["draft"]) or "memory"
         except (notebook.Full, ValueError) as e:
@@ -656,6 +694,8 @@ class Herald:
             self._learn(chat_id)
         elif cmd == "/approve":
             self._approve(chat_id, arg)
+        elif cmd == "/show":
+            self._show(chat_id, arg)
         elif cmd == "/drop":
             props, n = self._pick(chat_id, arg)
             if props:
