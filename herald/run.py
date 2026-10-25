@@ -869,44 +869,58 @@ def spent_by_day(costs_path, days=7):
                     usd = float(row.get("usd") or 0)
                 except (ValueError, TypeError, KeyError, AttributeError):
                     continue
-                if day < first:
-                    continue
+                if day < first or row.get("kind") in ("reserve", "release"):
+                    continue                            # holds are not spend nor turns (one turn showed as 3)
                 u, n, e = per.get(day, (0.0, 0, 0))
                 per[day] = (u + usd, n + 1, e + (1 if row.get("estimated") else 0))
     return [(d, *per[d]) for d in sorted(per, reverse=True)]
 
 
 class _LedgerLock:
-    """A lock file next to the ledger (O_EXCL), so check-and-reserve is one step across processes. Stale after 30 s."""
+    """An OS lock on a lasting file next to the ledger, so check-and-reserve is one step across processes and
+    threads. The kernel drops it when its holder dies, so there is no «stale» guess: a lock file removed by mtime
+    let a second waiter delete a fresh holder's lock and two got in (Tsaplya's second review)."""
 
     def __init__(self, costs_path, wait_s=10.0):
-        self.path, self.wait_s = costs_path + ".lock", wait_s
+        self.path, self.wait_s, self.f = costs_path + ".lock", wait_s, None
 
     def __enter__(self):
+        self.f = open(self.path, "a+b")
         end = time.time() + self.wait_s
         while True:
             try:
-                os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                if os.name == "nt":
+                    import msvcrt
+                    self.f.seek(0)
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
-            except FileExistsError:
-                try:
-                    if time.time() - os.path.getmtime(self.path) > 30:
-                        os.remove(self.path)                 # a crashed holder: take it over
-                        continue
-                except OSError:
-                    pass
+            except OSError:
                 if time.time() > end:
+                    self.f.close()
                     raise TimeoutError("ledger lock busy")
-                time.sleep(0.02)
+                time.sleep(0.005)
 
     def __exit__(self, *exc):
         try:
-            os.remove(self.path)
-        except OSError:
-            pass
+            if os.name == "nt":
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.f.close()
 
 
-def reserve(costs_path, usd, cap, kind):
+HOLD_TTL_S = 2 * 3600      # a hold whose process died before settle stops counting after this (Tsaplya: a killed
+                           # holder's reserve ate the daily cap until midnight). Longer than any turn or room reply.
+
+
+def reserve(costs_path, usd, cap, kind, ttl_s=HOLD_TTL_S):
     """Hold `usd` of today's cap before a paid call; the id to settle with, or None when it does not fit. The ledger
     was read before a reply and written after it, so two consumers (the bot and a room) could both pass with a few
     cents left and both pay a full reply (external review + Tsaplya, 25.10). Check and hold are one step now."""
@@ -918,7 +932,7 @@ def reserve(costs_path, usd, cap, kind):
         rid = f"{os.getpid()}-{time.time_ns()}"
         with open(costs_path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"), "usd": round(usd, 6),
-                                "kind": "reserve", "id": rid}) + "\n")
+                                "kind": "reserve", "id": rid, "until": round(time.time() + ttl_s)}) + "\n")
         return rid
 
 
@@ -933,18 +947,27 @@ def settle(costs_path, rid, usd_held, row):
 
 
 def spent_today(costs_path):
-    """(dollars, turns) in the ledger for today, open holds counted in the dollars; damaged rows are skipped."""
-    day, usd, n = time.strftime("%Y-%m-%d"), 0.0, 0
+    """(dollars, turns) in the ledger for today, live holds counted in the dollars; damaged rows are skipped."""
+    day, usd, n, holds = time.strftime("%Y-%m-%d"), 0.0, 0, {}
     if os.path.exists(costs_path):
         with open(costs_path, encoding="utf-8") as f:
             for line in f:
                 try:
                     row = json.loads(line)
-                    if row.get("day") == day:
-                        usd += float(row.get("usd") or 0)
-                        n += 0 if row.get("kind") in ("reserve", "release") else 1
+                    if row.get("day") != day:
+                        continue
+                    kind = row.get("kind")
+                    if kind == "reserve":
+                        holds[row.get("id")] = (float(row.get("usd") or 0), float(row.get("until") or 0))
+                    elif kind == "release":
+                        holds.pop(row.get("id"), None)
+                    else:
+                        usd, n = usd + float(row.get("usd") or 0), n + 1
                 except (ValueError, TypeError, AttributeError):
                     continue                            # a damaged row is skipped, never a deaf bot
+    now = time.time()
+    # an open hold counts until its time runs out (no «until» = an old row: counts, as it did)
+    usd += sum(u for u, until in holds.values() if not until or until > now)
     return usd, n
 
 
