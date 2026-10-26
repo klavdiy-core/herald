@@ -84,6 +84,8 @@ class Bot:
                     data = json.loads(e.read())
                 except ValueError:
                     data = {"ok": False, "error_code": e.code, "description": e.reason}
+                finally:
+                    e.close()                  # an HTTPError holds its response: read, then closed, not left to GC
             except (urllib.error.URLError, OSError, ValueError) as e:
                 # the message is redacted; `from None` keeps the chained traceback out of logs
                 raise TelegramError(f"{method}: {self._redact(e)}") from None
@@ -178,7 +180,10 @@ class Bot:
             with urllib.request.urlopen(url, timeout=self._timeout) as r:
                 data = r.read(max_bytes + 1)
         except (urllib.error.URLError, OSError, ValueError) as e:
-            raise TelegramError(f"download: {self._redact(e)}") from None
+            msg = f"download: {self._redact(e)}"         # built first: closing an HTTPError must not change it
+            if hasattr(e, "close"):
+                e.close()                                 # a 404 HTTPError holds its response
+            raise TelegramError(msg) from None
         if len(data) > max_bytes:
             raise TelegramError("download: file larger than the limit")
         with open(out_path, "wb") as f:
