@@ -112,6 +112,14 @@ def _kill_tree(proc):
         except ProcessLookupError:
             pass
     proc.wait()
+    # communicate() never finished on this path, so nothing closed the pipes: two open handles per killed turn in a
+    # bot that runs for weeks (seen as ResourceWarnings on a Linux run)
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
 
 def run_turn(prompt, workspace, cfg, session_id=None, should_abort=None, check_s=1.0):

@@ -66,7 +66,8 @@ class RoomHolds(unittest.TestCase):
     def rows(self):
         if not os.path.exists(self.costs):
             return []
-        return [json.loads(x) for x in open(self.costs, encoding="utf-8") if x.strip()]
+        with open(self.costs, encoding="utf-8") as f:
+            return [json.loads(x) for x in f if x.strip()]
 
     def test_room_guard_holds_once_per_reply_and_settles_on_spend(self):
         should_stop, on_spend = run.room_guard(self.cfg)
