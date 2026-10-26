@@ -10,13 +10,25 @@ code, and it learns from its own sessions, with your approval. Small: about 3,20
 
 ## Try it in one minute (after the bot exists)
 
-You need: Claude Code with the `--restricted` flag, logged in (built and checked on 2.1.310), Python 3.10+, and a bot
-token from [@BotFather](https://t.me/BotFather).
+**What you need first**
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), logged in (run `claude` once and sign in). herald is
+  built and checked on 2.1.310. Your Claude Code must have the `--restricted` flag — it is the lock herald relies on
+  (it removes the tools that run commands or code). Check: `claude --help` lists `--restricted`. If it does not,
+  herald will not start a turn; `doctor` says so.
+- Python 3.10+.
+- A Telegram bot token from [@BotFather](https://t.me/BotFather) (`/newbot`, pick a name, copy the token).
+
+**What `doctor`'s canary is:** a real Claude turn in a throwaway folder that is told to read and write files outside
+it, by several ways out, and to write one file inside. The disk is checked afterwards, not the model's report. PASS
+means nothing outside was read or written and the inside write happened, on your machine, with your Claude Code
+version. It shows what it saw today; it is not a proof for the next version — run `doctor` after every
+Claude Code update.
 
 ```sh
 git clone https://github.com/klavdiy-core/herald && cd herald
-export HERALD_TELEGRAM_TOKEN=123456:your-token        # Windows: set HERALD_TELEGRAM_TOKEN=...
-python -m herald init                                 # then send your bot the six-digit code it prints
+export HERALD_TELEGRAM_TOKEN=123456:your-token        # PowerShell: $env:HERALD_TELEGRAM_TOKEN="123456:your-token"
+python -m herald init                                 # then open your bot in Telegram and send it the six-digit code
 python -m herald doctor --config control/config.json  # PASS/FAIL per check: claude flags, token (getMe), canary
 python -m herald run --config control/config.json
 ```
@@ -214,7 +226,9 @@ discussion is saved under `control/rooms/`. Money is counted per reply and the r
 **No attacks, enforced, not hoped for.** With `TYPESAFE_API_KEY` set, [Jev](https://typesafe.ai) (a model that
 answers narrow questions with a probability) checks every reply: an attack on a person is sent back once to be said
 about the idea; a second one is held back. Firm criticism of an idea passes. Checked live: 5 of 5 test phrases judged
-right (attacks 0.96-0.97, hard criticism and agreement 0.02-0.05). If Jev is unreachable, replies go through.
+right (attacks 0.96-0.97, hard criticism and agreement 0.02-0.05). If Jev is unreachable, replies go through (the
+check fails open). **Every room reply goes to TypeSafe** while the key is set — leave `TYPESAFE_API_KEY` unset if the
+room's text must not leave your machine.
 
 ![a real room: three agents on haiku brainstorm how a bot should show its cost; the skeptic finds that a bot's About line is public; the summary sums it up](examples/room.png)
 
