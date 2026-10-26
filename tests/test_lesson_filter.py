@@ -1,4 +1,4 @@
-"""A lesson is a cause, not a neighbour (main Klavdiy's task, 25.10, after real team output: "internal went away after
+"""A lesson is a cause, not a neighbour (from real team output, 25.10: "internal went away after
 cd" and "Edit could not find the string -> use PowerShell"). Each test is red on 0.10.1."""
 import json
 import os
@@ -108,10 +108,10 @@ class Filter(unittest.TestCase):
         os.makedirs(proj)
         for p in self.paths:
             with open(p, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"type": "custom-title", "customTitle": "Voron"}) + "\n")
+                f.write(json.dumps({"type": "custom-title", "customTitle": "Writer"}) + "\n")
             os.replace(p, os.path.join(proj, os.path.basename(p)))
         team.run(proj, out)                                       # private by default
-        with open(os.path.join(out, "Voron.md"), encoding="utf-8") as f:
+        with open(os.path.join(out, "Writer.md"), encoding="utf-8") as f:
             md = f.read()
         self.assertIn("## Not lessons", md)
         self.assertIn("**coincidence**", md)
@@ -133,7 +133,7 @@ class Filter(unittest.TestCase):
         self.assertEqual({n["why"] for n in rep["not_lessons"]}, {"coincidence"})
 
     def test_appending_to_the_file_from_the_shell_is_a_bypass_too(self):
-        # the real case behind main Klavdiy's example used [IO.File]::AppendAllText, not Set-Content
+        # the real case behind this example used [IO.File]::AppendAllText, not Set-Content
         t = Transcript()
         t.tool("Edit", {"file_path": "C:/w/notes.md", "old_string": "x", "new_string": "y"}, EDIT_MISS, T(0), True)
         t.tool("PowerShell", {"command": "cd C:\\w; [IO.File]::AppendAllText('notes.md', \"- line\")"}, "", T(1))

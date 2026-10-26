@@ -1,4 +1,4 @@
-"""Team skills picked up by each role at start (main Klavdiy's task, 25.10). Red on 0.11.0."""
+"""Team skills picked up by each role at start (25.10). Red on 0.11.0."""
 import json
 import os
 import sys
@@ -29,8 +29,8 @@ def repo(d):
     with open(os.path.join(r, "README.md"), "w", encoding="utf-8") as f:     # a file a bad role name could reach
         f.write("# team skills\n\n- `video-every-scene` · listed outside roles/\n")
     os.makedirs(os.path.join(r, "roles"))
-    with open(os.path.join(r, "roles", "Voron.md"), "w", encoding="utf-8") as f:
-        f.write("# Voron\n\n- `witness-numbers` · why · who\n- `edit-fresh-read` · why · who\n- `broken-one` · x\n"
+    with open(os.path.join(r, "roles", "Writer.md"), "w", encoding="utf-8") as f:
+        f.write("# Writer\n\n- `witness-numbers` · why · who\n- `edit-fresh-read` · why · who\n- `broken-one` · x\n"
                 "- `no-such-skill` · listed but missing\n")
     return r
 
@@ -44,7 +44,7 @@ class Pickup(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_a_role_gets_its_two_skills_and_not_the_others(self):
-        skills, warnings = team_skills.for_role(self.repo, "Voron")
+        skills, warnings = team_skills.for_role(self.repo, "Writer")
         self.assertEqual([s["name"] for s in skills], ["witness-numbers", "edit-fresh-read"])
         toc = team_skills.toc(skills)
         self.assertIn("edit-fresh-read", toc)
@@ -52,16 +52,16 @@ class Pickup(unittest.TestCase):
         self.assertNotIn("video-every-scene", toc)
 
     def test_a_broken_or_missing_skill_is_skipped_with_a_warning(self):
-        _, warnings = team_skills.for_role(self.repo, "Voron")
+        _, warnings = team_skills.for_role(self.repo, "Writer")
         self.assertTrue(any("broken-one" in w for w in warnings))
         self.assertTrue(any("no-such-skill" in w for w in warnings))
 
     def test_a_role_line_without_backticks_is_warned_not_dropped_in_silence(self):
-        # Sokol 25.10 (tasks/2026-10-25_herald-silent-skip.md): Filin got 4 of 6 skills, warnings = []
-        with open(os.path.join(self.repo, "roles", "Filin.md"), "w", encoding="utf-8") as f:
-            f.write("# Filin\n\n- `witness-numbers` · why\n- anime-by-code · no backticks\n"
+        # 25.10, a real case: one role got 4 of 6 skills, warnings = []
+        with open(os.path.join(self.repo, "roles", "Editor.md"), "w", encoding="utf-8") as f:
+            f.write("# Editor\n\n- `witness-numbers` · why\n- anime-by-code · no backticks\n"
                     "- explain-hard: also none\n\n---\nnot a list line\n")
-        skills, warnings = team_skills.for_role(self.repo, "Filin")
+        skills, warnings = team_skills.for_role(self.repo, "Editor")
         self.assertEqual([s["name"] for s in skills], ["witness-numbers"])
         joined = " | ".join(warnings)
         self.assertIn("line 4", joined)
@@ -71,17 +71,17 @@ class Pickup(unittest.TestCase):
 
     def test_a_role_without_a_file_has_no_skills_and_does_not_fail(self):
         self.assertEqual(team_skills.for_role(self.repo, "Nobody")[0], [])
-        self.assertEqual(team_skills.for_role(os.path.join(self.tmp.name, "no-repo"), "Voron")[0], [])
+        self.assertEqual(team_skills.for_role(os.path.join(self.tmp.name, "no-repo"), "Writer")[0], [])
 
     def test_a_role_name_cannot_walk_out_of_roles(self):
         self.assertEqual(team_skills.for_role(self.repo, "../README")[0], [])
 
     def test_a_skill_taken_away_from_the_role_is_removed_from_its_folder(self):
         ws = os.path.join(self.tmp.name, "ws")
-        team_skills.setup(self.repo, "Voron", ws)
-        with open(os.path.join(self.repo, "roles", "Voron.md"), "w", encoding="utf-8") as f:
+        team_skills.setup(self.repo, "Writer", ws)
+        with open(os.path.join(self.repo, "roles", "Writer.md"), "w", encoding="utf-8") as f:
             f.write("- `witness-numbers` · only this one now\n")
-        team_skills.setup(self.repo, "Voron", ws)
+        team_skills.setup(self.repo, "Writer", ws)
         self.assertEqual(sorted(os.listdir(os.path.join(ws, "team-skills"))), ["witness-numbers"])
 
     def test_pull_failure_keeps_working_from_the_local_copy(self):
@@ -91,7 +91,7 @@ class Pickup(unittest.TestCase):
 
     def test_a_claude_role_in_the_room_sees_its_skills_and_can_read_them(self):
         work = os.path.join(self.tmp.name, "work")
-        a = agents.from_config({"name": "Ворон", "kind": "claude", "character": "Sharp.", "skills_role": "Voron"},
+        a = agents.from_config({"name": "Ада", "kind": "claude", "character": "Sharp.", "skills_role": "Writer"},
                                work, claude_cmd=["python", FAKE_CLAUDE, os.path.join(self.tmp.name, "rec.json")],
                                skills_repo=self.repo)
         with open(a.cfg.append_system_prompt_file, encoding="utf-8") as f:
@@ -111,10 +111,10 @@ class Config(unittest.TestCase):
             p = os.path.join(d, "c.json")
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": os.path.join(d, "c"),
-                           "team_skills": {"repo": r, "role": "Voron"},
-                           "agents": [{"name": "Ворон", "kind": "claude", "skills_role": "Voron"}]}, f)
+                           "team_skills": {"repo": r, "role": "Writer"},
+                           "agents": [{"name": "Ада", "kind": "claude", "skills_role": "Writer"}]}, f)
             cfg = run.load_config(p)
-            a = run.room_agents(cfg)["Ворон"]
+            a = run.room_agents(cfg)["Ада"]
             with open(a.cfg.append_system_prompt_file, encoding="utf-8") as f:
                 self.assertIn("edit-fresh-read", f.read())
             h, _ = run.build(cfg, "123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
@@ -128,8 +128,8 @@ class Config(unittest.TestCase):
             control = os.path.join(d, "control")
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"owners": [1], "workspace": os.path.join(d, "w"), "control": control,
-                           "agents": [{"name": "Ворон", "kind": "claude"}]}, f)
-            a = run.room_agents(run.load_config(p))["Ворон"]
+                           "agents": [{"name": "Ада", "kind": "claude"}]}, f)
+            a = run.room_agents(run.load_config(p))["Ада"]
             ws = os.path.abspath(a.ws)
             self.assertFalse(ws.startswith(os.path.abspath(control) + os.sep), ws)
             self.assertFalse(os.path.abspath(a.cfg.append_system_prompt_file).startswith(os.path.abspath(control)))
@@ -163,7 +163,7 @@ class MainHerald(unittest.TestCase):
             gate = speak_first.Gate(speak_first.Limits(enabled=False), os.path.join(control, "s.json"),
                                     os.path.join(control, "STOP"))
             h = run.Herald(FakeBot(), engine, EngineConfig(append_system_prompt_file=persona), gate, [], control, ws,
-                           {OWNER}, transcript_roots=[], skills_repo=r, skills_role="Voron")
+                           {OWNER}, transcript_roots=[], skills_repo=r, skills_role="Writer")
             h.handle(text("hi"))
             self.assertIn("edit-fresh-read", systems[-1])
             self.assertTrue(os.path.exists(os.path.join(ws, "team-skills", "witness-numbers", "SKILL.md")))

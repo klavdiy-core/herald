@@ -207,7 +207,7 @@ class Room:
                     last[m["speaker"]] = m["text"]
             summary = (f"(the room was stopped ({stopped}), so this is not a written summary: the last word of each "
                        "speaker)\n" + "\n".join(f"- {who}: {t[:300]}" for who, t in last.items()))
-        elif not self._fits():      # the same test as every reply (Tsaplya: a no-cap room paid its summary at 2.00/1.00)
+        elif not self._fits():      # the same test as every reply (a second review: a no-cap room paid its summary at 2.00/1.00)
             # no money left for a paid summary: the last word of each speaker, free, and said so
             last = {}
             for m in self.messages:

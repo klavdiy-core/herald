@@ -1,4 +1,4 @@
-"""Jev's two opt-in jobs besides the room (her word 25.10: «добавь еще jev в herald»): the /learn sieve and the model
+"""Jev's two opt-in jobs besides the room (added 25.10): the /learn sieve and the model
 router. Red before herald 0.22.0: Judge had no lesson()/simple(), learning had no jev_sift, Herald no route."""
 import json
 import os

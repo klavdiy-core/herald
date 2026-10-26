@@ -265,7 +265,7 @@ class Herald:
         # (0.23.2 released and re-held on every poll: two ledger rows each time)
         rid, held = getattr(r, "hold", (None, 0.0))
         if rid and r.spent <= getattr(r, "logged", 0.0):
-            # ... but the cap is still checked: someone else may have used it up (Tsaplya S1); our own hold is not
+            # ... but the cap is still checked: someone else may have used it up (second review); our own hold is not
             # counted against us
             over = self.max_usd_per_day is not None and self._today()[0] - held >= self.max_usd_per_day
             return "budget" if over else None
@@ -888,7 +888,7 @@ def spent_by_day(costs_path, days=7):
 class _LedgerLock:
     """An OS lock on a lasting file next to the ledger, so check-and-reserve is one step across processes and
     threads. The kernel drops it when its holder dies, so there is no «stale» guess: a lock file removed by mtime
-    let a second waiter delete a fresh holder's lock and two got in (Tsaplya's second review)."""
+    let a second waiter delete a fresh holder's lock and two got in (found by a second review)."""
 
     def __init__(self, costs_path, wait_s=10.0):
         self.path, self.wait_s, self.f = costs_path + ".lock", wait_s, None
@@ -925,14 +925,14 @@ class _LedgerLock:
             self.f.close()
 
 
-HOLD_TTL_S = 2 * 3600      # a hold whose process died before settle stops counting after this (Tsaplya: a killed
+HOLD_TTL_S = 2 * 3600      # a hold whose process died before settle stops counting after this (second review: a killed
                            # holder's reserve ate the daily cap until midnight). Longer than any turn or room reply.
 
 
 def reserve(costs_path, usd, cap, kind, ttl_s=HOLD_TTL_S):
     """Hold `usd` of today's cap before a paid call; the id to settle with, or None when it does not fit. The ledger
     was read before a reply and written after it, so two consumers (the bot and a room) could both pass with a few
-    cents left and both pay a full reply (external review + Tsaplya, 25.10). Check and hold are one step now."""
+    cents left and both pay a full reply (external review + a second review, 25.10). Check and hold are one step now."""
     os.makedirs(os.path.dirname(os.path.abspath(costs_path)), exist_ok=True)
     with _LedgerLock(costs_path):
         # the caller already cut the call to what today has left; the hold only has to fit what is left NOW
@@ -997,7 +997,7 @@ def room_guard(cfg):
             return None
         if hold[0]:                                     # a hold stands for the reply in progress (no new hold) ...
             # ... yet the cap is still read, our own hold left out: a free reply leaves the hold standing, and another
-            # process may spend past the cap meanwhile (Tsaplya S1)
+            # process may spend past the cap meanwhile (second review)
             return "budget" if spent_today(costs)[0] - hold[1] >= cap else None
         if not nxt:
             return "budget" if spent_today(costs)[0] >= cap else None

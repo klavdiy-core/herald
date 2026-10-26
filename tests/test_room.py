@@ -115,7 +115,7 @@ class Moderator(unittest.TestCase):
         self.assertNotIn("idiot", json.dumps(r.messages))
 
     def test_no_paid_summary_when_the_budget_is_used_up_even_without_a_cap(self):
-        # Tsaplya's second review: no reply_cap (reserve 0), budget 1.00, one reply at 1.00, then end() paid a summary
+        # a second review: no reply_cap (reserve 0), budget 1.00, one reply at 1.00, then end() paid a summary
         a = Voice("Raven", ["the one idea"], cost=1.00)
         r = room.Room("t", seats(a), fmt="brainstorm", budget_usd=1.00)
         r.step()

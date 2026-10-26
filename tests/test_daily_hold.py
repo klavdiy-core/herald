@@ -1,4 +1,4 @@
-"""The daily cap with two consumers at once (external review + Tsaplya, 25.10): the ledger was read before a paid call
+"""The daily cap with two consumers at once (external review + a second review, 25.10): the ledger was read before a paid call
 and written after it, so the bot and a room could both pass with a few cents left and both pay. Red before the hold."""
 import json
 import os
@@ -95,7 +95,7 @@ class RoomHolds(unittest.TestCase):
         self.assertAlmostEqual(run.spent_today(self.costs)[0], 0.1 + 0.3)
 
     def test_a_standing_hold_still_sees_the_cap_used_up_elsewhere(self):
-        # Tsaplya S1: a free reply leaves the hold standing; another process spends past the cap; the next reply
+        # second review: a free reply leaves the hold standing; another process spends past the cap; the next reply
         # must not go on (0.23.4 stopped checking while a hold stood)
         should_stop, _ = run.room_guard(self.cfg)
         self.assertIsNone(should_stop())                                      # reply 1 held, then cost nothing
@@ -122,7 +122,7 @@ class RoomHolds(unittest.TestCase):
 
 
 class HoldReview(unittest.TestCase):
-    """Tsaplya's second review of c78a20e."""
+    """A second review of c78a20e."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

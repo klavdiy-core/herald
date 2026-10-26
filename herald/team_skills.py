@@ -55,7 +55,7 @@ def for_role(repo, role):
             if m:
                 names.append(m.group(1))
             elif BARE.match(line.lstrip()[2:]):            # starts like a skill name, a note line does not
-                # a skill written without backticks used to drop out in silence (Filin got 4 of 6, 25.10)
+                # a skill written without backticks used to drop out in silence (one role got 4 of 6, 25.10)
                 warnings.append(f"roles/{role}.md line {n}: no `name` in backticks, not picked up: "
                                 f"{line.strip()[:80]}")
     skills = []

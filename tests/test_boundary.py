@@ -1,5 +1,5 @@
-"""The boundary audit of 25.10 (three read-only lenses: files, secrets, processes; C:\\ATTENTION- BACKUP. to construct\\
-00_INBOX\\herald_boundary_audit_20261025.json). One test per confirmed finding, each red on 0.22.1."""
+"""The boundary audit of 25.10 (three read-only reviews: files, secrets, processes). One test per confirmed finding,
+each red on 0.22.1."""
 import json
 import os
 import sys
