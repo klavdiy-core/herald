@@ -74,6 +74,8 @@ class TurnResult:
 
 
 def build_argv(cfg, session_id=None):
+    if not cfg.tools:
+        raise ValueError('tools must not be empty: `--tools ""` means no tools and the turn hangs')
     argv = list(cfg.claude_cmd) + FIXED_FLAGS + [
         "--model", cfg.model, "--tools", ",".join(cfg.tools),
         "--max-turns", str(cfg.max_turns), "--max-budget-usd", str(cfg.max_budget_usd)]

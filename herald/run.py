@@ -33,6 +33,7 @@ VOICE_IN = "[voice message, transcribed]\n{}"
 HELP = ("/stop · /resume · /new · /voice off|voice|both · /status · /usage · /retry · /model NAME|default\n"
         "/learn · /show N · /approve N · /drop N · /memory · /forget N · /room TOPIC · /recall WORDS")
 LEARN_SHOWN = 3400       # characters of proposals one /learn message shows; the rest waits for /show N
+PEER_TOOLS = ["Read"]   # a peer bot's turn: Read only, in an empty folder of its own (it finds nothing). Never empty: `--tools ""` hangs the turn
 MIN_TURN = 0.01            # claude's smallest --max-budget-usd herald passes
 NUDGE_STEPS = 8            # a turn this long probably taught something (an idea from Hermes, not its numbers)
 NUDGE_EVERY = 5
@@ -464,6 +465,8 @@ class Herald:
                 watcher = threading.Thread(target=self._watch, args=(done,), daemon=True)
                 watcher.start()
         cfg = self._system(prompt, extra, peer=peer)
+        if peer and cfg is not None:
+            cfg = dataclasses.replace(cfg, tools=list(PEER_TOOLS))
         held = float(getattr(cfg, "max_budget_usd", 0) or 0) if self.max_usd_per_day is not None else 0.0
         rid = reserve(self.costs_path, held, self.max_usd_per_day, "turn") if held else None
         if held and rid is None:                      # another consumer took what was left: no paid call

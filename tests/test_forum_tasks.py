@@ -129,7 +129,23 @@ class Base(unittest.TestCase):
     def owner(self, thread, text):
         self.h.handle(Message(self._id(), FORUM, "text", text=text, thread_id=thread, from_id=OWNER))
 
+    auto_bind_peers = False     # a peer works only where task.peers lists it; the old peer tests get the binding as a fixture
+
+    def _bind_peer(self, thread, who):
+        p = os.path.join(self.control, "tasks.json")
+        if not os.path.exists(p):
+            return
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        t = d.get("tasks", {}).get(str(thread))
+        if t is not None and who not in t.get("peers", []):
+            t["peers"] = list(t.get("peers", [])) + [who]
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+
     def peer(self, thread, text, who=PEER):
+        if self.auto_bind_peers:
+            self._bind_peer(thread, who)
         self.h.handle(Message(self._id(), FORUM, "text", text=text, thread_id=thread, from_id=who, from_bot=True))
 
     def tap(self, thread, data, who=OWNER, bot=False):
@@ -368,6 +384,8 @@ class Closed(Base):
 
 
 class Peers(Base):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
+
     def setUp(self):
         super().setUp()
         self.make(peer_bots=(PEER,), max_bot_hops=3, bot_reply_gap_s=0)
@@ -451,6 +469,8 @@ class Peers(Base):
 class PeerPace(Base):
     """bot2bot п.2 (не чаще 1 ответа на 5 с на пару, остальное ОДНИМ ходом позже) и п.6 (/stop владельца паузит ботов в теме)."""
 
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
+
     def setUp(self):
         super().setUp()
         self.make(peer_bots=(PEER,), max_bot_hops=99, bot_turns_per_hour=99, bot_reply_gap_s=5)
@@ -520,6 +540,7 @@ class Forwarded(Base):
         super().setUp()
         self.make(peer_bots=(PEER,), bot_reply_gap_s=0)
         self.t = self.new_task("fwd")
+        self._bind_peer(self.t, PEER)           # these tests send through h.handle, not peer()
 
     def fwd(self, thread, text, who=OWNER, bot=False):
         self.h.handle(Message(self._id(), FORUM, "text", text=text, thread_id=thread, from_id=who, from_bot=bot, forwarded=True))
@@ -586,6 +607,7 @@ class PeerForwarded(Base):
         super().setUp()
         self.make(peer_bots=(PEER,), max_bot_hops=99, bot_turns_per_hour=99, bot_reply_gap_s=5)
         self.t = self.new_task("pf")
+        self._bind_peer(self.t, PEER)           # these tests send through h.handle, not peer()
 
     def pfwd(self, text):
         self.h.handle(Message(self._id(), FORUM, "text", text=text, thread_id=self.t, from_id=PEER, from_bot=True, forwarded=True))

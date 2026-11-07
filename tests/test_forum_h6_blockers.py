@@ -71,6 +71,7 @@ class Guest(LockBase):
 
 
 class Seen(T.Base):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     def test_M1_a_thousand_unique_echoes_do_not_grow_seen_without_bound(self):
         self.make(peer_bots=(T.PEER,), max_bot_hops=2, bot_turns_per_hour=99, bot_reply_gap_s=0)
         t = self.new_task("echo")
@@ -92,6 +93,7 @@ class Seen(T.Base):
 
 
 class Pace(T.Base):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     # C1 (общий потолок форума) переехал в test_forum_h6_pace.py — отдельное имя bot_turns_per_hour_forum.
 
     def test_C2_the_gap_is_per_pair_across_topics(self):
@@ -274,6 +276,7 @@ class PersonaEngine:
 
 
 class PeerPrompt(T.Base):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     NB, TOC, PERSONA = "NOTEBOOK-MARK-7", "SKILLS-TOC-MARK-7", "PERSONA-MARK-7"
 
     def setUp(self):
@@ -299,6 +302,14 @@ class PeerPrompt(T.Base):
         self.assertIn(self.PERSONA, s, "персона пропала")
         self.assertNotIn(self.NB, s, "тетрадь владельца ушла чужому боту")
         self.assertNotIn(self.TOC, s, "skills_toc ушёл чужому боту")
+
+    def test_P3_the_peer_is_told_it_can_only_read_an_empty_folder_and_the_owner_is_not(self):
+        self.peer(self.t, "hello")
+        self.owner(self.t, "hi")
+        peer_s, owner_s = self.engine.calls[0]["system"], self.engine.calls[1]["system"]
+        self.assertIn("only read an empty folder", peer_s, "P3: the peer was not told its limits")
+        self.assertIn("cannot create, edit or run", peer_s)
+        self.assertNotIn("only read an empty folder", owner_s, "P3: the owner got the peer's limits")
 
     def test_P2_GUARD_the_owner_turn_in_the_same_topic_gets_everything(self):
         self.owner(self.t, "hi")

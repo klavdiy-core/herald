@@ -138,13 +138,18 @@ Another bot can work in a task next to you, for example a second herald. This is
 `"peer_bots": [123456789]`, **numeric bot ids only** (a username can change hands; an id cannot; usernames are refused
 at start). `peer_bots` without `forum_chat_id` is refused too.
 
+**A listed bot is silent until a topic binds it.** A bot may start a turn in a topic only if its id is in `peer_bots`
+*and* in that topic's `peers` list (`control/tasks.json`, `"peers": [123456789]`). A topic without `peers`, or with a broken one,
+binds nobody; the first refusal per bot and topic goes to `audit.log`. A peer's turn is a fresh session (the topic's own session is
+never continued or overwritten), has no file tools, and its answer is stripped of tool-call markup and of local paths before it is sent.
+
 A listed bot is heard only in your task group, only inside a topic you opened with `/task`, and only while it is
 open. It cannot start a task, close, reopen, stop or resume one, press buttons, or use any command: a bot's message
 starting with `/` is ignored. Its text reaches Claude marked as a colleague's information, never as your order.
 A turn started by another bot runs with your persona only, without your approved memory and skills (see
 [Learning](#learning-it-gets-better-at-your-work-and-you-approve-every-lesson)): what you taught herald stays out of
-turns that a bot can trigger. It does continue the topic's conversation, so it can see what was said in that topic
-before; keep in a topic with bots only what you would show them.
+turns that a bot can trigger. It is a new session every time, started in an empty folder: it does not continue the
+topic's conversation and cannot see the topic's files.
 Bots in General and in private chats are never heard.
 
 If `control/tasks.json` cannot be read, herald moves it aside to `tasks.json.bad` (or `tasks.json.bad1`, `.bad2`…

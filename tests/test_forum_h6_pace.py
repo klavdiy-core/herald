@@ -39,6 +39,7 @@ class Mk(T.Base):
 
 
 class ForumCap(Mk):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     def test_C1_four_busy_topics_stop_at_the_forum_cap_of_30(self):
         self.make2(peer_bots=(T.PEER,), max_bot_hops=99, bot_turns_per_hour=10, bot_turns_per_hour_forum=30, bot_reply_gap_s=0)
         topics = [self.new_task(f"t{i}") for i in range(4)]
@@ -56,6 +57,7 @@ class ForumCap(Mk):
 
 
 class HeldClear(Mk):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     """не-блокер 9."""
 
     def setUp(self):
@@ -118,6 +120,7 @@ class HeldClear(Mk):
 
 
 class HourSilence(Mk):
+    auto_bind_peers = True      # old peer tests assume a bound peer (fixture)
     """Тишина по часу снимается только человеком."""
 
     def hot(self, **kw):
