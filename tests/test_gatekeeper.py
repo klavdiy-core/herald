@@ -128,6 +128,55 @@ class Apply(unittest.TestCase):
         self.assertEqual(len(lines), 4, "every decision is one audit line")
 
 
+class Workspace(unittest.TestCase):
+    """K12 groups.json inside any --workspace (a worker console's folder) -> exit 2 before the token, the Bot and the log;
+    outside all of them -> starts; no --workspace -> starts with one WARNING line"""
+    def _run(self, groups_rel, workspaces, token="x"):
+        from unittest import mock
+        d = tempfile.mkdtemp(prefix="gkw_")
+        gp = os.path.join(d, groups_rel); os.makedirs(os.path.dirname(gp), exist_ok=True)
+        with open(gp, "w", encoding="utf-8") as f:
+            json.dump(GROUPS, f)
+        lp = os.path.join(d, "gk.log"); made = []
+
+        class FakeBot:
+            def __init__(self, *a, **k):
+                made.append(1)
+
+            def _call(self, method, params=None, **kw):
+                if method == "getUpdates":
+                    raise SystemExit(0)
+                return True
+        args = ["--groups", gp, "--log", lp] + sum((["--workspace", os.path.join(d, w)] for w in workspaces), [])
+        for w in workspaces:
+            os.makedirs(os.path.join(d, w), exist_ok=True)
+        with mock.patch.dict(os.environ, {"HERALD_GATEKEEPER_TOKEN": token}), mock.patch.object(G.telegram, "Bot", FakeBot):
+            try:
+                rc = G.main(args)
+            except SystemExit as e:
+                rc = e.code
+        log = open(lp, encoding="utf-8").read() if os.path.exists(lp) else None
+        return rc, made, log
+
+    def test_K12_groups_inside_a_workspace_is_refused_before_anything(self):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc, made, log = self._run("ws2/sub/groups.json", ["ws1", "ws2"])
+        self.assertEqual((rc, made, log), (2, [], None), "inside the SECOND workspace: exit 2, no Bot, no log")
+        # argparse also exits 2 on an unknown --workspace: only the refusal line proves the check ran
+        self.assertIn("Refused: --groups", out.getvalue())
+        self.assertIn("ws2", out.getvalue().split("--workspace", 1)[1])
+
+    def test_K12b_outside_all_workspaces_starts(self):
+        rc, made, log = self._run("control/groups.json", ["ws1", "ws2"])
+        self.assertEqual(rc, 0); self.assertEqual(made, [1]); self.assertNotIn("WARNING", log)
+
+    def test_K12c_no_workspace_starts_with_one_warning(self):
+        rc, made, log = self._run("control/groups.json", [])
+        self.assertEqual(rc, 0); self.assertEqual(log.count("WARNING"), 1)
+
+
 class Poll(unittest.TestCase):
     def test_K9_allowed_updates_are_narrow(self):
         self.assertEqual(sorted(G.ALLOWED_UPDATES), ["chat_join_request", "chat_member"])

@@ -123,11 +123,27 @@ def apply(action, bot, log):
         bot._call("declineChatJoinRequest", {"chat_id": action.chat_id, "user_id": action.user_id})
 
 
+def inside_workspace(groups_path, workspaces):
+    """the first workspace that contains groups.json, else None - one rule with herald.groups.inside_workspace
+    (UNC/extended paths refused, real paths, file identity of every parent)"""
+    from .groups import inside_workspace as _inside
+    for w in workspaces:
+        if _inside(groups_path, w):
+            return w
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m herald.gatekeeper")
     ap.add_argument("--groups", required=True)
     ap.add_argument("--log", required=True)
+    ap.add_argument("--workspace", action="append", default=[],
+                    help="a worker console's folder (repeat for each); groups.json inside any of them is refused")
     a = ap.parse_args(argv)
+    bad = inside_workspace(a.groups, a.workspace)
+    if bad:   # before the token, the Bot and the log: a console writes into its own folder and must not list itself
+        print(f"Refused: --groups {a.groups} is inside --workspace {bad}; keep groups.json where no worker console can write.")
+        return 2
     token = os.environ.get("HERALD_GATEKEEPER_TOKEN", "")
     if not token:
         print("Set HERALD_GATEKEEPER_TOKEN (the gatekeeper bot's token; never an argument).")
@@ -141,6 +157,8 @@ def main(argv=None):
             f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {msg}\n")
 
     log(f"gatekeeper up: {len(groups.groups)} groups")
+    if not a.workspace:
+        log("WARNING no --workspace given: cannot check that groups.json is outside every worker console's folder")
     self_id = None
     try:
         me = bot._call("getMe", {})
