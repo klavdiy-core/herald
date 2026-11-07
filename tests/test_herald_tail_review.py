@@ -11,6 +11,9 @@ before that fix.
   V9 a junction inside the task folder is not walked into (Windows only)
   V10 a failing snapshot is reported to the owner, not raised out of the turn
   V11 the main loop writes one "resumes from" audit line per topic at start
+  V12 a complete .tmp beside a good tail (cut before the renames) is the newest generation: the commit is finished
+  V13 a torn .tmp is dropped, the good tail is read
+  V14 a .tmp cut inside its last line (all five keys present, no final newline) is torn, never raised over a good tail
 """
 import os, subprocess, sys, tempfile, unittest
 from unittest import mock
@@ -137,6 +140,35 @@ class Review(T.Base):
         with mock.patch.object(forum, "snapshot", side_effect=OSError("disk gone")):
             self.owner(self.t, "go")                                            # must not raise
         self.assertTrue(any("failed before reaching Claude" in t for t in self.said_in(self.t)), self.said_in(self.t))
+
+    def test_V12_complete_tmp_beside_a_good_tail_is_the_newest(self):
+        forum.write_tail(self.control, self.t, GOOD)                            # tail = sGOOD
+        with open(self.base + ".tmp", "w", encoding="utf-8") as f:              # cut before the renames: tmp = N+1
+            f.write("".join(f"{k}: {dict(GOOD, session='sNEWER')[k]}\n" for k in forum.TAIL_KEYS))
+        src, text = forum.read_tail(self.control, self.t)
+        self.assertEqual(src, "tail")
+        self.assertIn("sNEWER", text)
+        self.assertFalse(os.path.exists(self.base + ".tmp"))
+        with open(self.base + ".prev", encoding="utf-8") as f:
+            self.assertIn("sGOOD", f.read())
+
+    def test_V13_torn_tmp_is_dropped(self):
+        forum.write_tail(self.control, self.t, GOOD)
+        with open(self.base + ".tmp", "w", encoding="utf-8") as f:
+            f.write("done: half")
+        src, text = forum.read_tail(self.control, self.t)
+        self.assertEqual((src, "sGOOD" in text), ("tail", True))
+        self.assertFalse(os.path.exists(self.base + ".tmp"))
+
+    def test_V14_tmp_cut_inside_its_last_line_is_not_raised(self):
+        forum.write_tail(self.control, self.t, GOOD)
+        torn = "".join(f"{k}: {dict(GOOD, session='bbbbbbbb')[k]}\n" for k in forum.TAIL_KEYS)[:-5]   # 'session: bbbb', no \n
+        with open(self.base + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+            f.write(torn)
+        src, text = forum.read_tail(self.control, self.t)
+        self.assertEqual(src, "tail")
+        self.assertIn("sGOOD", text)
+        self.assertFalse(os.path.exists(self.base + ".tmp"))
 
     def test_V11_loop_logs_where_each_topic_resumes(self):
         forum.write_tail(self.control, self.t, GOOD)

@@ -61,11 +61,11 @@ class Iso(T.Base):
         self.assertTrue(self.inside(c["cwd"], self.ws), "A3: the owner left the workspace: %r" % c["cwd"])
 
     def test_A4_no_absolute_path_reaches_the_group(self):
-        self.engine.reply = lambda ws: "I am in %s, also C:\\Users\\Admin\\secret\\a.txt and /home/x/y/z.txt end" % ws
+        self.engine.reply = lambda ws: "I am in %s, also C:\\Work\\Admin\\secret\\a.txt and /home/x/y/z.txt end" % ws
         self.peer(self.a, "where", who=T.PEER)
         got = self.sent()
         self.assertNotIn(self.engine.calls[-1]["cwd"], got, "A4: the peer's cwd leaked: %r" % got)
-        self.assertNotIn("C:\\Users", got, "A4: a Windows path leaked: %r" % got)
+        self.assertNotIn("C:\\Work", got, "A4: a Windows path leaked: %r" % got)
         self.assertNotIn("/home/x", got, "A4: a POSIX path leaked: %r" % got)
         self.assertIn("end", got)
 

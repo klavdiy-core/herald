@@ -81,16 +81,25 @@ def write_tail(control, thread, fields):
 def read_tail(control, thread):
     """-> (source, text): the tail if it holds all five keys, else the .prev, else none"""
     base = os.path.join(control, "tails", f"{thread}.md")
-    # .tmp is fsynced before any rename: a cut between the two renames leaves the newest complete generation there
-    text = _valid_tail(base)
+    # .tmp is fsynced before any rename and is gone after a finished write, so a complete .tmp is ALWAYS the newest
+    # generation (a cut before or between the two renames): finish that commit. An incomplete .tmp is a torn write: drop it.
+    tmp = base + ".tmp"
+    text = _valid_tail(tmp)
     if text is not None:
-        return "tail", text
-    text = _valid_tail(base + ".tmp")
-    if text is not None:                              # finish the interrupted commit: the tmp is newer than any .prev
         try:
-            os.replace(base + ".tmp", base)
+            if _valid_tail(base) is not None:
+                os.replace(base, base + ".prev")
+            os.replace(tmp, base)
         except OSError:
             pass
+        return "tail", text
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    text = _valid_tail(base)
+    if text is not None:
         return "tail", text
     text = _valid_tail(base + ".prev")
     return ("prev", text) if text is not None else ("none", None)
@@ -103,8 +112,12 @@ def _valid_tail(p):
             text = f.read()
     except (OSError, ValueError):                     # UnicodeDecodeError is a ValueError
         return None
-    keys = {ln.split(":", 1)[0] for ln in text.splitlines() if ":" in ln}
-    return text if all(k in keys for k in TAIL_KEYS) else None
+    # complete = exactly what write_tail writes: the five keys in order, each line ended by "\n" (a write cut in the
+    # middle of the last line still holds all five keys, so a key check alone would take a torn file as whole)
+    if not text.endswith("\n"):
+        return None
+    keys = [ln.split(":", 1)[0] for ln in text[:-1].split("\n")]
+    return text if keys == list(TAIL_KEYS) else None
 
 
 def _one_line(v):
