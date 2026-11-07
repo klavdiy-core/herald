@@ -490,6 +490,31 @@ class Herald:
             self._save(session=r.session_id)
         return r
 
+    def resume_report(self):
+        """After a power cut: where each topic stopped, from disk alone (no network, no engine).
+        -> {thread: {"tail": str|None, "age_s": float (-1 when unknown), "source": "tail"|"prev"|"none"}}"""
+        import datetime
+        out = {}
+        if not self.forum:
+            return out
+        for thread in self.forum._tasks().get("tasks", {}):
+            source, text = forum_mod.read_tail(self.control, thread)
+            age = None
+            if text:
+                at = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("turn_at:")), "")
+                try:
+                    t = datetime.datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+                    age = self.now() - t
+                    if age < 0:                                  # the clock went back: unknown, never «just now»
+                        self._log(f"tail of topic {thread} is from the future ({at}); clock went back?")
+                        age = None
+                except ValueError:
+                    age = None
+            if source == "prev":
+                self._log(f"tail of topic {thread} unreadable; used the {source} generation")
+            out[str(thread)] = {"tail": text, "age_s": age if age is not None else -1.0, "source": source}
+        return out
+
     def _log(self, line):
         os.makedirs(self.control, exist_ok=True)
         with open(os.path.join(self.control, "audit.log"), "a", encoding="utf-8") as f:
@@ -904,6 +929,12 @@ class Herald:
             self.resume()                          # what a crash left mid-batch comes first
         except Exception:
             self._log("resume failed:\n" + traceback.format_exc())
+        try:                                       # after a power cut: one audit line per topic, where it stopped
+            for th, r in self.resume_report().items():
+                first = next((ln for ln in (r["tail"] or "").splitlines() if ln.startswith("next:")), "next: ?")
+                self._log(f"topic {th} resumes from {r['source']} (age {r['age_s']:.0f} s) {first[:120]}")
+        except Exception:
+            self._log("resume report failed:\n" + traceback.format_exc())
         while True:
             try:
                 start = max(x for x in (self._pending_offset, self._state()["offset"]) if x is not None)

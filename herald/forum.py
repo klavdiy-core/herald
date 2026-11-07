@@ -40,6 +40,127 @@ def _run():
     return run
 
 
+# ---------- the tail of a topic: where it stopped, readable from disk alone after a power cut ----------
+TAIL_KEYS = ("done", "next", "files", "turn_at", "session")
+SNAPSHOT_MAX = 5000            # files looked at in a task folder per turn; a bigger folder is noted, not walked to the end
+
+
+def _flush_dir(path):
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return                                    # Windows cannot open a folder this way; the file itself was flushed
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_tail(control, thread, fields):
+    """<control>/tails/<thread>.md: tmp + fsync + replace + fsync of the folder; the previous generation stays as .prev."""
+    d = os.path.join(control, "tails")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{thread}.md")
+    body = "".join(f"{k}: {_one_line(fields.get(k, ''))}\n" for k in TAIL_KEYS)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(body)
+        f.flush()
+        os.fsync(f.fileno())
+    if _valid_tail(path) is not None:
+        try:
+            os.replace(path, path + ".prev")          # only a complete tail becomes the previous generation
+        except OSError:
+            pass
+    os.replace(tmp, path)
+    _flush_dir(d)
+
+
+def read_tail(control, thread):
+    """-> (source, text): the tail if it holds all five keys, else the .prev, else none"""
+    base = os.path.join(control, "tails", f"{thread}.md")
+    # .tmp is fsynced before any rename: a cut between the two renames leaves the newest complete generation there
+    text = _valid_tail(base)
+    if text is not None:
+        return "tail", text
+    text = _valid_tail(base + ".tmp")
+    if text is not None:                              # finish the interrupted commit: the tmp is newer than any .prev
+        try:
+            os.replace(base + ".tmp", base)
+        except OSError:
+            pass
+        return "tail", text
+    text = _valid_tail(base + ".prev")
+    return ("prev", text) if text is not None else ("none", None)
+
+
+def _valid_tail(p):
+    """the file's text if it decodes and holds all five keys, else None (garbage after a power cut is not a tail)"""
+    try:
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, ValueError):                     # UnicodeDecodeError is a ValueError
+        return None
+    keys = {ln.split(":", 1)[0] for ln in text.splitlines() if ":" in ln}
+    return text if all(k in keys for k in TAIL_KEYS) else None
+
+
+def _one_line(v):
+    return "".join(" " if c in "\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029" else c for c in str(v))
+
+
+def snapshot(folder):
+    """{relative path: (mtime_ns, size)} of the files under a task folder, so a turn's writes are known from the disk,
+    not from what the model says it did. Capped at SNAPSHOT_MAX files."""
+    out = {}
+    for dp, ds, fs in os.walk(folder):
+        ds[:] = [d for d in ds if not _is_link(os.path.join(dp, d))]   # a junction would list files outside the task
+        for f in fs:
+            p = os.path.join(dp, f)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            out[os.path.relpath(p, folder).replace("\\", "/")] = (st.st_mtime_ns, st.st_size)
+            if len(out) > SNAPSHOT_MAX:
+                return None                       # too big to know: the tail says so instead of guessing
+    return out
+
+
+def _is_link(p):
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return True
+    return os.path.islink(p) or bool(getattr(st, "st_file_attributes", 0) & 0x400)   # 0x400 = reparse point (junction)
+
+
+def written(before, after):
+    """files that are new or changed between two snapshots, sorted; None when either side was over the cap"""
+    if before is None or after is None:
+        return None
+    return sorted(p for p, sig in after.items() if before.get(p) != sig)
+
+
+def _tail_fields(answer, owner_text, session, files, now):
+    import datetime
+    lines = [ln.strip() for ln in (answer or "").splitlines() if ln.strip()]
+    nxt = ""
+    for ln in reversed(lines):
+        m = re.match(r"(?:next|дальше)\s*:\s*(.+)", ln, re.I)
+        if m:
+            nxt = m.group(1).strip()
+            break
+    if not nxt:
+        nxt = "(forwarded message)" if (owner_text or "").startswith(_run().FORWARDED[:40]) else (owner_text or "").strip()[:200]
+    done = (lines[0] if lines else "")[:200]
+    files_line = f"? (task folder over {SNAPSHOT_MAX} files)" if files is None else ";".join(files)
+    return {"done": done, "next": nxt, "files": files_line, "session": session or "",
+            "turn_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
 class Forum:
     def __init__(self, herald, chat_id, peer_bots=(), max_hops=6, per_hour=10, gap_s=5, dedup_s=600, per_hour_forum=30):
         self.h, self.chat_id = herald, chat_id
@@ -278,6 +399,10 @@ class Forum:
             task["session_id"] = None                       # this topic only
             self._clear_held(th)
             self._put(data)
+            try:                                            # the tail no longer points at the dropped session
+                write_tail(self.h.control, th, _tail_fields("(new conversation)", "", "", [], self.h.now()))
+            except Exception as e:                          # noqa: BLE001
+                self.h._log(f"tail of topic {th} not reset on /new ({e})")
             return self._say(th, "New conversation in this topic.")
         if os.path.exists(self.h.stop_path):
             return self._say(th, "Stopped. /resume to continue.")
@@ -300,7 +425,10 @@ class Forum:
             usd, _ = h._today()
             return self._say(thread, f"Today's daily budget is used up (${usd:.2f} of ${h.max_usd_per_day:.2f}).")
         note = TASK_NOTE.format(name=task["name"]) + ("\n" + extra if extra else "")
+        before = {}
         try:
+            if not peer:
+                before = snapshot(self._dir(thread))         # the owner's turn: what it writes is read from the disk
             empty = tempfile.mkdtemp(prefix="peer_") if peer else None      # a peer never sees the topic's folder
             try:
                 r = h._turn(text, workspace=empty or self._dir(thread), session=None if peer else task.get("session_id"),
@@ -320,6 +448,18 @@ class Forum:
                 h._log(f"task session not saved ({e}); the answer is sent anyway")
         shown = self._shown(r)
         self._say(thread, self._scrub(shown) if peer else shown)
+        if not peer:                                         # the tail: the owner's turn only, after the answer reached the topic
+            try:
+                files = written(before, snapshot(self._dir(thread)))
+                if r.ok:
+                    fields = _tail_fields(r.text, text, r.session_id, files, h.now())
+                else:                                        # stopped / timed out: what it wrote before dying is still listed
+                    fields = _tail_fields(f"(turn failed: {r.error})", text, task.get("session_id"), files, h.now())
+                for k in ("done", "next"):                   # prose is not trusted: no local path reaches the tail
+                    fields[k] = self._scrub(fields[k])
+                write_tail(h.control, thread, fields)
+            except Exception as e:                           # noqa: BLE001 — a failed tail never loses the answer
+                h._log(f"tail of topic {thread} not written ({e})")
 
     def _scrub(self, text):
         """A peer's answer goes to the whole group: cut fake tool-call blocks (a model with no tools may print one),
