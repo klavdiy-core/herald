@@ -7,7 +7,9 @@ Every decision is one line in its audit log. Owners are never banned.
 
     HERALD_GATEKEEPER_TOKEN=... python -m herald.gatekeeper --groups control/groups.json --log control/gatekeeper.log
 
-groups.json: {"owners": [ids], "groups": [{"chat_id": -100..., "name": "...", "members": [ids], "bots": [ids]}]}
+groups.json (one file, shared with herald's multigroup): {"her_id": id, "groups": [{"chat_id": -100..., "name": "...", "kind": "hall"|"train",
+"owners": [ids], "members": [ids], "bots": [ids], "peer_bots": [ids], "persona": "...", "notes": "..."}]}. Allowed in a group: her_id and
+that group's owners, members, bots and peer_bots; her_id is never banned in any listed group.
 Make this bot an admin of every listed group with the right to ban users and to invite users (for join requests).
 """
 import argparse
@@ -21,8 +23,8 @@ from . import telegram
 
 ALLOWED_UPDATES = ["chat_member", "chat_join_request"]
 JOINED = {"member", "restricted", "administrator", "creator"}
-GROUP_KEYS = {"chat_id", "name", "members", "bots"}
-TOP_KEYS = {"owners", "groups"}
+GROUP_KEYS = {"chat_id", "name", "kind", "owners", "members", "bots", "peer_bots", "persona", "notes"}
+TOP_KEYS = {"her_id", "groups"}
 BAN_TRIES = 3                                            # a failed ban is retried on the next polls, then logged GAVE UP
 
 
@@ -41,16 +43,16 @@ class Group:
 
 @dataclass
 class Groups:
-    owners: frozenset = frozenset()
+    her_id: object = None
     groups: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data):
         if not isinstance(data, dict) or set(data) - TOP_KEYS:
             raise ValueError(f"groups.json: unknown keys {sorted(set(data) - TOP_KEYS) if isinstance(data, dict) else data!r}")
-        owners = _ids(data.get("owners", []), "owners")
-        if not owners:
-            raise ValueError("groups.json: owners is empty - an owner would be banned from their own group on the next join")
+        her = data.get("her_id")
+        if her is not None and (isinstance(her, bool) or not isinstance(her, int)):
+            raise ValueError(f"groups.json: her_id must be a numeric id, got {her!r}")
         out = {}
         for g in data.get("groups", []):
             if not isinstance(g, dict) or set(g) - GROUP_KEYS:
@@ -60,8 +62,12 @@ class Groups:
                 raise ValueError(f"groups.json: chat_id must be a number, got {cid!r}")
             if cid in out:
                 raise ValueError(f"groups.json: chat_id {cid} is listed twice - a typo would silently widen or narrow a group")
-            out[cid] = Group(cid, str(g.get("name", "")), _ids(g.get("members", []), "members") | _ids(g.get("bots", []), "bots"))
-        return cls(owners, out)
+            owners = _ids(g.get("owners", []), f"group {cid} owners")
+            if not owners:
+                raise ValueError(f"groups.json: group {cid} has no owners - an owner would be banned from their own group on the next join")
+            allowed = owners | _ids(g.get("members", []), "members") | _ids(g.get("bots", []), "bots") | _ids(g.get("peer_bots", []), "peer_bots")
+            out[cid] = Group(cid, str(g.get("name", "")), allowed)
+        return cls(her, out)
 
     @classmethod
     def load(cls, path):
@@ -69,7 +75,7 @@ class Groups:
             return cls.from_dict(json.load(f))
 
     def allowed(self, chat_id, user_id):
-        return user_id in self.owners or user_id in self.groups[chat_id].allowed
+        return (self.her_id is not None and user_id == self.her_id) or user_id in self.groups[chat_id].allowed
 
 
 @dataclass(frozen=True)
@@ -143,7 +149,7 @@ def main(argv=None):
         log(f"getMe failed, own id unknown: {e}")
     if self_id is not None:
         for g in groups.groups.values():
-            if self_id not in g.allowed and self_id not in groups.owners:
+            if self_id not in g.allowed:
                 log(f"WARNING own bot {self_id} is not in bots: of group {g.chat_id} ({g.name}) - add it, and every peer bot")
     def stamp():
         st = os.stat(a.groups)

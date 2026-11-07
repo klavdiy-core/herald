@@ -22,7 +22,7 @@ CHAT, OWNER, MEMBER, STRANGER = -1001, 11, 22, 33
 
 
 def groups(members=(MEMBER,), owners=(OWNER,)):
-    return gk.Groups.from_dict({"owners": list(owners), "groups": [{"chat_id": CHAT, "name": "g", "members": list(members), "bots": []}]})
+    return gk.Groups.from_dict({"groups": [{"chat_id": CHAT, "name": "g", "owners": list(owners), "members": list(members), "bots": []}]})
 
 
 def joined(user, chat=CHAT):
@@ -55,13 +55,50 @@ class Decide(unittest.TestCase):
 class Config(unittest.TestCase):
     def test_D1_duplicate_chat_id_is_refused(self):
         with self.assertRaises(ValueError, msg="D1: two entries with the same chat_id were accepted"):
-            gk.Groups.from_dict({"owners": [OWNER], "groups": [
-                {"chat_id": CHAT, "name": "a", "members": [MEMBER]}, {"chat_id": CHAT, "name": "b", "members": []}]})
+            gk.Groups.from_dict({"groups": [
+                {"chat_id": CHAT, "name": "a", "owners": [OWNER], "members": [MEMBER]}, {"chat_id": CHAT, "name": "b", "owners": [OWNER], "members": []}]})
 
     def test_D2_no_owner_is_refused(self):
-        for data in ({"groups": [{"chat_id": CHAT, "members": [MEMBER]}]}, {"owners": [], "groups": [{"chat_id": CHAT, "members": [MEMBER]}]}):
+        for data in ({"groups": [{"chat_id": CHAT, "members": [MEMBER]}]}, {"groups": [{"chat_id": CHAT, "owners": [], "members": [MEMBER]}]}):
             with self.assertRaises(ValueError, msg="D2: a groups.json without an owner was accepted"):
                 gk.Groups.from_dict(data)
+
+
+class UnionSchema(unittest.TestCase):
+    """one groups.json for the gatekeeper and herald: top {her_id, groups}, a group {chat_id, name, kind, owners, peer_bots, persona, notes, members, bots}
+    allowed in a group = her_id + the group's owners + members + bots + peer_bots; her_id is never banned in a listed group"""
+    HER, BOT, PEER, OTHER_OWNER, CHAT2 = 5005, 777, 778, 12, -1002
+
+    def g(self):
+        return gk.Groups.from_dict({"her_id": self.HER, "groups": [
+            {"chat_id": CHAT, "name": "a", "kind": "train", "owners": [OWNER], "members": [MEMBER], "bots": [self.BOT], "peer_bots": [self.PEER], "persona": "", "notes": ""},
+            {"chat_id": self.CHAT2, "name": "b", "kind": "train", "owners": [self.OTHER_OWNER], "members": [], "bots": [], "peer_bots": []}]})
+
+    def banned(self, user, chat=CHAT):
+        return [a for a in gk.decide(joined(user, chat), self.g()) if a.kind == "ban"]
+
+    def test_W0_control_a_stranger_is_banned_and_listed_are_not(self):
+        self.assertTrue(self.banned(STRANGER), "W0: a stranger was not banned under the union schema")
+        for u in (OWNER, MEMBER):
+            self.assertFalse(self.banned(u), "W0: listed user %s was banned" % u)
+
+    def test_W1_her_id_is_never_banned_in_a_listed_group(self):
+        for chat in (CHAT, self.CHAT2):
+            self.assertFalse(self.banned(self.HER, chat), "W1: her_id was banned in %s" % chat)
+
+    def test_W2_bots_and_peer_bots_are_allowed(self):
+        for u in (self.BOT, self.PEER):
+            self.assertFalse(self.banned(u), "W2: a listed bot %s was banned at the door" % u)
+        self.assertTrue(self.banned(self.PEER, self.CHAT2), "W2: a bot of group A is allowed into group B")
+
+    def test_W3_an_owner_is_the_owner_of_their_group_only(self):
+        self.assertFalse(self.banned(self.OTHER_OWNER, self.CHAT2), "W3 control: the owner of B was banned in B")
+        self.assertTrue(self.banned(self.OTHER_OWNER, CHAT), "W3: the owner of B is let into A")
+        self.assertTrue(self.banned(OWNER, self.CHAT2), "W3: the owner of A is let into B")
+
+    def test_W4_a_top_level_owners_key_is_refused(self):
+        with self.assertRaises(ValueError, msg="W4: the old top-level 'owners' was accepted (a leftover that nobody reads)"):
+            gk.Groups.from_dict({"owners": [OWNER], "groups": [{"chat_id": CHAT, "name": "g", "owners": [OWNER], "members": []}]})
 
 
 class Loop(unittest.TestCase):
@@ -70,7 +107,7 @@ class Loop(unittest.TestCase):
     def run_main(self, script, groups_after=None, fail_first_ban=False, polls=4):
         d = tempfile.mkdtemp(prefix="gk_")
         gp, lp = os.path.join(d, "groups.json"), os.path.join(d, "gk.log")
-        json.dump({"owners": [OWNER], "groups": [{"chat_id": CHAT, "name": "g", "members": [MEMBER], "bots": []}]}, open(gp, "w"))
+        json.dump({"groups": [{"chat_id": CHAT, "name": "g", "owners": [OWNER], "members": [MEMBER], "bots": []}]}, open(gp, "w"))
         calls, state = [], {"n": 0, "failed": False}
 
         class FakeBot:
@@ -106,7 +143,7 @@ class Loop(unittest.TestCase):
         self.assertTrue(len(bans) >= 2 or rc not in (0, None), "B1: a failed ban was tried %d time(s) and the process went on (exit %r): the intruder stays" % (len(bans), rc))
 
     def test_L1_a_person_removed_from_the_list_is_banned_on_their_next_join(self):
-        after = {"owners": [OWNER], "groups": [{"chat_id": CHAT, "name": "g", "members": [], "bots": []}]}
+        after = {"groups": [{"chat_id": CHAT, "name": "g", "owners": [OWNER], "members": [], "bots": []}]}
         calls, _ = self.run_main({3: [joined(MEMBER)]}, groups_after=after)
         self.assertTrue([c for c in calls if c[0] == "banChatMember" and c[1].get("user_id") == MEMBER],
                         "L1: the list was not re-read: a person removed from groups.json joined and was not banned")

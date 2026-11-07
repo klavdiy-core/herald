@@ -9,6 +9,8 @@ It never posts into a group; it acts (ban, approve, decline) and writes one audi
   K7 the gatekeeper never bans an owner, even if the owner is missing from a group's member list
   K8 groups.json: a chat_id or a member id that is not an integer, or an unknown key -> load refuses with a clear error
   K9 the poller asks Telegram only for chat_member and chat_join_request updates
+  K11 one groups.json with herald: her_id is never banned in any listed group, a peer_bot is allowed, the top level
+      has no "owners" (refused as unknown), and a group without owners is refused
 """
 import json, os, sys, tempfile, unittest
 
@@ -16,11 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from herald import gatekeeper as G  # noqa: E402
 
 HALL, TRAIN, STRANGER_CHAT = -1001000000001, -1001000000002, -1009999999999
-OWNER, ANNA, BORIS, EVE, TEAM_BOT, ODD_BOT = 11, 21, 22, 66, 701, 799
+OWNER, HER, ANNA, BORIS, EVE, TEAM_BOT, ODD_BOT, PEER = 11, 12, 21, 22, 66, 701, 799, 702
 
-GROUPS = {"owners": [OWNER],
-          "groups": [{"chat_id": HALL, "name": "hall", "members": [ANNA, BORIS], "bots": [TEAM_BOT]},
-                     {"chat_id": TRAIN, "name": "train-1", "members": [ANNA], "bots": []}]}
+GROUPS = {"her_id": HER,
+          "groups": [{"chat_id": HALL, "name": "hall", "kind": "hall", "owners": [OWNER], "members": [ANNA, BORIS], "bots": [TEAM_BOT]},
+                     {"chat_id": TRAIN, "name": "train-1", "kind": "train", "owners": [OWNER], "members": [ANNA], "bots": [],
+                      "peer_bots": [PEER], "persona": "p", "notes": "n"}]}
 
 
 def member_update(chat, user, old="left", new="member", is_bot=False):
@@ -68,6 +71,18 @@ class Decide(unittest.TestCase):
         self.assertEqual(self.act(member_update(HALL, EVE, old="member", new="kicked")), [])
         self.assertEqual(self.act(member_update(HALL, ANNA, old="member", new="administrator")), [])
 
+    def test_K11_her_and_peer_bots_and_the_one_schema(self):
+        self.assertEqual(self.act(member_update(TRAIN, HER)), [], "her_id is listed nowhere as a member and still never banned")
+        self.assertEqual(self.act(join_request(HALL, HER)), [("approve", HALL, HER)])
+        self.assertEqual(self.act(member_update(TRAIN, PEER, is_bot=True)), [], "a peer_bot of the group is allowed")
+        self.assertEqual(self.act(member_update(HALL, PEER, is_bot=True)), [("ban", HALL, PEER)], "a peer_bot of another group is not")
+        with self.assertRaises(ValueError, msg="top-level owners is the old schema"):
+            G.Groups.from_dict({"owners": [OWNER], "groups": []})
+        with self.assertRaises(ValueError, msg="a group without owners"):
+            G.Groups.from_dict({"her_id": HER, "groups": [{"chat_id": HALL, "name": "h", "owners": [], "members": [ANNA]}]})
+        with self.assertRaises(ValueError, msg="her_id must be a number"):
+            G.Groups.from_dict({"her_id": "@her", "groups": []})
+
     def test_K7_owner_is_never_banned(self):
         self.assertEqual(self.act(member_update(TRAIN, OWNER)), [])
         self.assertEqual(self.act(join_request(TRAIN, OWNER)), [("approve", TRAIN, OWNER)])
@@ -82,10 +97,10 @@ class Load(unittest.TestCase):
             return G.Groups.load(p)
 
     def test_K8_bad_files_refused(self):
-        for bad in ({"groups": [{"chat_id": "-100123", "name": "x", "members": []}]},
-                    {"groups": [{"chat_id": -100123, "name": "x", "members": ["@anna"]}]},
-                    {"groups": [{"chat_id": -100123, "name": "x", "members": [True]}]},
-                    {"groups": [{"chat_id": -100123, "name": "x", "members": [], "color": "red"}]},
+        for bad in ({"groups": [{"chat_id": "-100123", "name": "x", "owners": [1], "members": []}]},
+                    {"groups": [{"chat_id": -100123, "name": "x", "owners": [1], "members": ["@anna"]}]},
+                    {"groups": [{"chat_id": -100123, "name": "x", "owners": [1], "members": [True]}]},
+                    {"groups": [{"chat_id": -100123, "name": "x", "owners": [1], "members": [], "color": "red"}]},
                     {"groups": [], "extra": 1}):
             with self.assertRaises(ValueError, msg=f"accepted: {bad}"):
                 self._load(bad)
