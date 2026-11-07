@@ -1,19 +1,19 @@
-"""A role without roles/<Role>.md must produce a WARNING, not silent emptiness (Berkut M-14829; Sokol M-14802: 9 roles had no file).
-herald.team_skills.for_role returned ([], []) for it ("simply has no team skills"), and setup() logs only the warnings it gets, so a
-worker with a mistyped role started with NO team skills and nothing in any log said why.
+"""A role without roles/<Role>.md must produce a WARNING, not silent emptiness.
+for_role() used to return ([], []) for it ("simply has no team skills"), and setup() logs only the warnings it gets, so a worker with a
+mistyped role started with NO team skills and nothing in any log said why.
 Contract: (1) for_role of a role with no file -> a warning that names the role and `roles/<Role>.md`;
 (2) the same warning reaches setup()'s log line `team skills: ...`; (3) a missing repo gives a warning too;
 controls: a role WITH a file gets no such warning; a bad role name keeps its own warning; setup without repo/role still returns "" quietly.
-KNOWN LIMIT (Berkut M-14868): the mutant «remove the whole missing-file branch» goes red as an ERROR (UnboundLocalError/other), not as a clean
-assertion failure - it is caught, but not for the stated reason. Mutants that keep the branch and weaken it (no role name, always warns) fail by assertion.
-Run: python -X utf8 test_team_skills_missing_role.py [path-to-herald-repo]   (exit 0 PASS, 1 FAIL)
-Tsaplya - claude-sonnet-5-5 - 07.11.2026. Not placed in the herald repo: the repo is Aleksandr's; Dyatel takes this file into tests\\ with the fix."""
-import os, sys, tempfile, unittest
+Known limit: the mutant «remove the whole missing-file branch» goes red as an ERROR, not as a clean assertion failure - it is caught,
+but not for the stated reason. Mutants that keep the branch and weaken it (no role name, always warns) fail by assertion.
+Run from the repo root: python -X utf8 -m unittest tests.test_team_skills_missing_role"""
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
 
-REPO = sys.argv[1] if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]) else r"C:\Users\Admin\Another\data\team\aleksandr\repos\herald"
-if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
-    sys.argv.pop(1)
-sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from herald import team_skills  # noqa: E402
 
 
@@ -46,10 +46,11 @@ class MissingRole(unittest.TestCase):
 
     def test_the_warning_reaches_the_setup_log(self):
         lines = []
-        team_skills.pull = lambda repo: (True, "")       # no git in the fixture
         ws = os.path.join(self.tmp.name, "ws")
         os.makedirs(ws)
-        toc = team_skills.setup(self.repo, "Nobody", ws, log=lines.append)
+        # patch only for this call and restore it: a permanent patch broke a neighbouring test when this file ran first
+        with mock.patch.object(team_skills, "pull", lambda repo: (True, "")):       # no git in the fixture
+            toc = team_skills.setup(self.repo, "Nobody", ws, log=lines.append)
         self.assertEqual(toc, "")
         self.assertTrue(any(l.startswith("team skills:") and "Nobody" in l for l in lines), "log lines: %r" % (lines,))
 
