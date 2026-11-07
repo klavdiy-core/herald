@@ -420,6 +420,8 @@ text goes to TypeSafe, so `--jev` is refused together with `--private`; in the b
 - One worker: messages are handled one at a time. While a turn runs, herald keeps listening: `/stop` is acted on at
   once and kills the running turn within about a second (its cost is counted as the turn's whole cap, since the
   real figure is lost with it); other messages and button taps wait and are handled after it, in order.
+- Groups: the operator's `!veto` (her_id) is read after the running turn ends, not during it, so the answer of
+  that turn is still posted before the task closes. Reading it mid-turn is a known gap.
 
 ## Test
 

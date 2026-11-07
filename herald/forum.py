@@ -13,7 +13,7 @@ import re
 import shutil
 import tempfile
 
-from . import telegram
+from . import notebook, telegram
 
 TASK_TAP = re.compile(r"^task:(done|keep):(\d+)$")
 DONE_TOPIC = "Done"            # English: the repo is public
@@ -175,12 +175,31 @@ def _tail_fields(answer, owner_text, session, files, now):
 
 
 class Forum:
-    def __init__(self, herald, chat_id, peer_bots=(), max_hops=6, per_hour=10, gap_s=5, dedup_s=600, per_hour_forum=30):
+    def __init__(self, herald, chat_id, peer_bots=(), max_hops=6, per_hour=10, gap_s=5, dedup_s=600, per_hour_forum=30,
+                 group=None, her_id=None):
         self.h, self.chat_id = herald, chat_id
+        self.group, self.her_id = group, her_id
+        self._vetoed = set()                       # threads her !veto closed while a turn was running
+        self.kind = group["kind"] if group else "train"
+        if group is None:                          # the legacy forum: the old places, byte for byte
+            self.control, self.workspace = herald.control, herald.workspace
+            self.stop_path, self.state_path = herald.stop_path, herald.state_path
+            self.tasks_root = os.path.join(herald.workspace, "tasks")
+            self.nb, self.owners, self.persona_file = herald.nb, herald.owners, herald.persona_file
+        else:                                      # a group: its own folder under control/ and under workspace/
+            gid = str(chat_id)
+            self.control = os.path.join(herald.control, "groups", gid)
+            self.workspace = os.path.join(herald.workspace, "groups", gid)
+            self.stop_path = os.path.join(self.control, "STOP")
+            self.state_path = os.path.join(self.control, "herald.json")
+            self.tasks_root = os.path.join(self.workspace, "tasks")
+            self.nb = None if self.kind == "hall" else notebook.Notebook(os.path.join(self.control, "learned"))
+            self.owners = set(group["owners"])
+            self.persona_file = group["persona"]
         self.peers = {int(b) for b in peer_bots}
         self.max_hops, self.per_hour, self.gap_s, self.dedup_s = max_hops, per_hour, gap_s, dedup_s
         self.per_hour_forum = per_hour_forum
-        self.path = os.path.join(herald.control, "tasks.json")
+        self.path = os.path.join(self.control, "tasks.json")
         self._depth, self._halted, self._seen, self._hourly = {}, {}, {}, {}
         self._last_turn, self._held = {}, {}
         self._refused = set()                    # (thread, bot) pairs already audited as not bound
@@ -258,7 +277,7 @@ class Forum:
     def _put(self, data, keep_prev=True):
         if getattr(self, "_store_locked", False):
             raise OSError("tasks.json could not be kept; refusing to overwrite it")
-        os.makedirs(self.h.control, exist_ok=True)
+        os.makedirs(self.control, exist_ok=True)
         if keep_prev and self._valid(self.path) is not None:     # the last good generation, only ever a readable one
             self._flush_copy(self.path, self.path + ".prev")
         tmp = self.path + ".tmp"
@@ -282,7 +301,7 @@ class Forum:
     def _sync_dir(self):
         """make the rename itself durable (POSIX); Windows cannot open a folder, there the call is skipped"""
         try:
-            fd = os.open(self.h.control, os.O_RDONLY)
+            fd = os.open(self.control, os.O_RDONLY)
         except OSError:
             return
         try:
@@ -292,6 +311,21 @@ class Forum:
         finally:
             os.close(fd)
 
+    def stopped(self):
+        """the general STOP (control/STOP) or this group's own; for the legacy forum they are one file"""
+        return os.path.exists(self.h.stop_path) or os.path.exists(self.stop_path)
+
+    def _is_her(self, m):
+        return not m.from_bot and self.her_id is not None and m.from_id == self.her_id
+
+    @property
+    def her_stop_path(self):
+        return self.stop_path + ".her"
+
+    def may_stop(self, m):
+        """a bot never stops anything; here only an owner of this group, or her, does"""
+        return not m.from_bot and (m.from_id in self.owners or self._is_her(m))
+
     def _locked(self, thread):
         """True when the store cannot be written: say it once in the topic and do nothing that Telegram or money would keep."""
         if not getattr(self, "_store_locked", False):
@@ -300,22 +334,33 @@ class Forum:
         return True
 
     def _dir(self, thread):
-        d = os.path.join(self.h.workspace, "tasks", str(thread))
+        d = os.path.join(self.tasks_root, str(thread))
         os.makedirs(d, exist_ok=True)
         return d
 
     def _say(self, thread, text):
         self.h.bot.send_text(self.chat_id, text, thread_id=thread or None)
 
+    def _kw(self):
+        """a group names its chat in every topic call; the legacy forum calls the bot exactly as before"""
+        return {"chat_id": self.chat_id} if self.group is not None else {}
+
+    def _topic(self, name):
+        return self.h.bot.create_topic(name, **self._kw())
+
     def _link(self, thread):
         return f"https://t.me/c/{str(self.chat_id).replace('-100', '', 1)}/{thread}"
 
     # ---------- in ----------
     def handle(self, m):
-        owner = m.from_id in self.h.owners and not m.from_bot
+        owner = m.from_id in self.owners and not m.from_bot
         peer = m.from_bot and m.from_id in self.peers
+        if self._is_her(m):
+            return self._her(m)
         if not (owner or peer):
             return
+        if self.kind == "hall":                              # a hall holds no tasks and starts no turn
+            return self._hall(m) if owner else None
         if m.kind == "callback":
             return self._tap(m) if owner else None          # a bot never presses a button
         if m.kind == "voice" and owner and m.thread_id:
@@ -331,14 +376,12 @@ class Forum:
         if not text:
             return
         word = r._command_word(text) if text.startswith("/") and not m.forwarded else ""
-        if owner and m.thread_id and word in ("/stop", "/resume"):
+        if owner and m.thread_id and word in ("/stop", "/resume", "/go"):
             # the owner's stop needs no task store: it works in any topic, even when tasks.json is broken or locked
             if word == "/stop":
                 self._clear_held(m.thread_id)
                 return self.stop(m)
-            if os.path.exists(self.h.stop_path):
-                os.remove(self.h.stop_path)
-            return self._say(m.thread_id, "Resumed.")
+            return self._resume(m.thread_id)
         data = self._tasks()
         if getattr(self, "_store_locked", False):
             return self._locked(m.thread_id) if owner else None   # no topic, no turn, no write until it is readable
@@ -365,9 +408,83 @@ class Forum:
 
     def stop(self, m):
         """Owner's /stop, also from the watcher during a turn: the same STOP file as in the private chat."""
-        os.makedirs(self.h.control, exist_ok=True)
-        open(self.h.stop_path, "w").close()
+        os.makedirs(self.control, exist_ok=True)
+        open(self.stop_path, "w").close()
+        if self._is_her(m):                                  # her stop is lifted only by her
+            open(self.her_stop_path, "w").close()
         self._say(m.thread_id, "Stopped: no turns. /resume to continue.")
+
+    def _her(self, m):
+        """Her rights above an owner's: /stop, /resume, /go and the !-commands; any other line of hers is a participant's
+        and is neither stored nor a trigger."""
+        if m.kind != "text" or m.forwarded:
+            return
+        r = _run()
+        text = (m.text or "").translate(r.ZERO_WIDTH).strip()
+        if text.startswith("!"):
+            parts = text[1:].split(None, 1)
+            word = ("/" + parts[0].lower().split("@", 1)[0]) if parts else ""       # '!stop@bot' is '!stop', like '/stop@bot'
+            text = word + (" " + parts[1] if len(parts) > 1 else "") if parts else "/"
+        elif text.startswith("/"):
+            word = r._command_word(text)
+            if word not in ("/stop", "/resume", "/go"):
+                return
+        else:
+            return
+        th = m.thread_id
+        if word == "/stop":
+            self._clear_held(th)
+            return self.stop(m)
+        if word in ("/resume", "/go"):
+            return self._resume(th, by_her=True)
+        if self.kind == "hall":
+            return self._say(th, "This room takes only !stop, !resume and !go.")
+        if word == "/veto":
+            return self._veto(th)
+        if word == "/task" and th == 0:
+            data = self._tasks()
+            if getattr(self, "_store_locked", False):
+                return self._locked(0)
+            return self._general(text, word, data)
+        self._say(th, "I know !stop, !resume, !go, !veto and !task (in the general topic); not " + (word if len(word) > 1 else "that") + ".")
+
+    def _veto(self, thread):
+        """her !veto closes the task now, even in the middle of its turn: the answer of that turn is not posted"""
+        data = self._tasks()
+        if getattr(self, "_store_locked", False):
+            return self._locked(thread)
+        task = data["tasks"].get(str(thread))
+        if task is None or task["state"] != "open":
+            return
+        self._vetoed.add(thread)
+        self._finish(thread, data, task)
+
+    def _resume(self, thread, by_her=False):
+        if os.path.exists(self.her_stop_path):
+            if not by_her:
+                return self._say(thread, "Her stop stands: only she lifts it.")
+            os.remove(self.her_stop_path)
+        if os.path.exists(self.stop_path):
+            os.remove(self.stop_path)
+        if os.path.exists(self.h.stop_path) and self.h.stop_path != self.stop_path:
+            return self._say(thread, "This group is resumed; the general stop is still on.")
+        self._say(thread, "Resumed.")
+
+    def _hall(self, m):
+        word = _run()._command_word(m.text) if m.kind == "text" and (m.text or "").startswith("/") else ""
+        if word == "/task":
+            self._say(m.thread_id, "A hall holds no tasks: work happens in the training groups.")
+
+    def _model(self, thread, text):
+        r = _run()
+        name = " ".join(text.split()[1:])
+        if name == "default":
+            self.h._save(_path=self.state_path, model=None)
+            return self._say(thread, "Model: back to the configured one.")
+        if r.MODEL_NAME.match(name):
+            self.h._save(_path=self.state_path, model=name)
+            return self._say(thread, f"Model: {name} from the next turn.")
+        self._say(thread, "/model claude-haiku-5-5 | claude-sonnet-5-5 | claude-opus-5-5 | default")
 
     def _general(self, text, word, data):
         if word == "/task":
@@ -375,7 +492,7 @@ class Forum:
             if not name:
                 return self._say(0, "/task <name>: starts a new task topic.")
             try:
-                tid = self.h.bot.create_topic(name)
+                tid = self._topic(name)
             except (telegram.TelegramError, ValueError) as e:
                 return self._say(0, f"Could not create the topic ({e}).")
             data["tasks"][str(tid)] = {"name": name, "session_id": None, "state": "open",
@@ -383,6 +500,8 @@ class Forum:
             self._dir(tid)
             self._put(data)
             return self._say(0, f"Task started: {name}")
+        if word == "/model":
+            return self._model(0, text)
         if word == "/new":
             return self._say(0, "In a topic /new starts a fresh conversation; to open a task use /task <name>.")
         if word == "/tasks":
@@ -396,9 +515,9 @@ class Forum:
             self._clear_held(th)
             return self.stop(m)
         if word == "/resume":
-            if os.path.exists(self.h.stop_path):
-                os.remove(self.h.stop_path)
-            return self._say(th, "Resumed.")
+            return self._resume(th)
+        if word == "/model":
+            return self._model(th, text)
         if word == "/status":
             lines = [f"bot {bot}: {len(items)} held" for (t, bot), items in self._held.items() if t == th and items]
             return self._say(th, "\n".join(lines) or "Nothing held.")
@@ -413,11 +532,11 @@ class Forum:
             self._clear_held(th)
             self._put(data)
             try:                                            # the tail no longer points at the dropped session
-                write_tail(self.h.control, th, _tail_fields("(new conversation)", "", "", [], self.h.now()))
+                write_tail(self.control, th, _tail_fields("(new conversation)", "", "", [], self.h.now()))
             except Exception as e:                          # noqa: BLE001
                 self.h._log(f"tail of topic {th} not reset on /new ({e})")
             return self._say(th, "New conversation in this topic.")
-        if os.path.exists(self.h.stop_path):
+        if self.stopped():
             return self._say(th, "Stopped. /resume to continue.")
         self._depth[th], self._halted[th] = 0, False        # a human spoke: the bots' count starts again
         self._hourly.pop(th, None)
@@ -439,13 +558,14 @@ class Forum:
             return self._say(thread, f"Today's daily budget is used up (${usd:.2f} of ${h.max_usd_per_day:.2f}).")
         note = TASK_NOTE.format(name=task["name"]) + ("\n" + extra if extra else "")
         before = {}
+        self._vetoed.discard(thread)
         try:
             if not peer:
                 before = snapshot(self._dir(thread))         # the owner's turn: what it writes is read from the disk
             empty = tempfile.mkdtemp(prefix="peer_") if peer else None      # a peer never sees the topic's folder
             try:
                 r = h._turn(text, workspace=empty or self._dir(thread), session=None if peer else task.get("session_id"),
-                            extra=note, peer=peer)
+                            extra=note, peer=peer, scope=self)
             finally:
                 if empty:
                     shutil.rmtree(empty, ignore_errors=True)
@@ -453,6 +573,13 @@ class Forum:
             import traceback
             h._log("topic turn crashed before claude:\n" + traceback.format_exc())
             return self._say(thread, "That failed before reaching Claude; the reason is in control/audit.log.")
+        if thread in self._vetoed:                           # her veto came in during the turn: no answer, no write
+            self._vetoed.discard(thread)
+            h._log(f"turn in topic {thread} dropped: vetoed")
+            return
+        if os.path.exists(self.her_stop_path):               # her stop came in during the turn: nothing of it is posted
+            h._log(f"turn in topic {thread} dropped: her stop")
+            return
         if r.ok and r.session_id and not peer:               # a peer's session is never the topic's
             task["session_id"] = r.session_id
             try:
@@ -470,7 +597,7 @@ class Forum:
                     fields = _tail_fields(f"(turn failed: {r.error})", text, task.get("session_id"), files, h.now())
                 for k in ("done", "next"):                   # prose is not trusted: no local path reaches the tail
                     fields[k] = self._scrub(fields[k])
-                write_tail(h.control, thread, fields)
+                write_tail(self.control, thread, fields)
             except Exception as e:                           # noqa: BLE001 — a failed tail never loses the answer
                 h._log(f"tail of topic {thread} not written ({e})")
 
@@ -478,7 +605,7 @@ class Forum:
         """A peer's answer goes to the whole group: cut fake tool-call blocks (a model with no tools may print one),
         the local folders (workspace, control) it may name, and any other absolute path."""
         text = TOOL_TAG.sub("", TOOL_BLOCK.sub("", text))
-        for root in (self.h.workspace, self.h.control):
+        for root in (self.h.workspace, self.h.control, self.workspace, self.control):
             for form in {str(root), os.path.abspath(str(root)), os.path.realpath(str(root))}:
                 for v in {form, form.replace("\\", "/")}:
                     if v:
@@ -508,7 +635,7 @@ class Forum:
     def _peer(self, m, text, data, task):
         t, now, h = m.thread_id, self.h.now(), self.h
         piece = _run()._forwarded(text, bot=m.from_id) if m.forwarded else text    # data in a fence, signed by the bot
-        if os.path.exists(h.stop_path):
+        if self.stopped():
             return                                           # a bot never lifts or outlives the owner's STOP
         key = (t, m.from_id, hashlib.sha1(" ".join(text.lower().split()).encode()).hexdigest())
         if now - self._seen.get(key, -1e12) < self.dedup_s:
@@ -564,12 +691,12 @@ class Forum:
     def _finish(self, thread, data, task):
         try:
             try:
-                self.h.bot.edit_topic(thread, "✅ " + task["name"][:NAME_CUT])
+                self.h.bot.edit_topic(thread, "✅ " + task["name"][:NAME_CUT], **self._kw())
             except telegram.TelegramError as e:
                 if NOT_MODIFIED not in str(e):               # already renamed by an earlier try: that is fine
                     raise
             try:
-                self.h.bot.close_topic(thread)
+                self.h.bot.close_topic(thread, **self._kw())
             except telegram.TelegramError as e:
                 if NOT_MODIFIED not in str(e):               # already closed in Telegram: converge
                     raise
@@ -586,7 +713,7 @@ class Forum:
             return True
         try:
             if not data.get("done_topic"):
-                data["done_topic"] = self.h.bot.create_topic(DONE_TOPIC)
+                data["done_topic"] = self._topic(DONE_TOPIC)
                 self._put(data)
             self._say(data["done_topic"], f"{task['name']} — {self._link(thread)}")
         except (telegram.TelegramError, OSError) as e:
@@ -596,7 +723,7 @@ class Forum:
     def _reopen(self, thread, data, task):
         was_open = task["state"] == "open"                   # Telegram is asked either way: the UI may disagree
         try:
-            self.h.bot.reopen_topic(thread)
+            self.h.bot.reopen_topic(thread, **self._kw())
         except telegram.TelegramError as e:
             if NOT_MODIFIED not in str(e):
                 return self._say(thread, f"Could not reopen the topic ({e}); it stays {task['state']}.")
@@ -610,7 +737,7 @@ class Forum:
             self.h._log(f"topic {thread} reopened in Telegram but not saved ({e})")
             return self._say(thread, f"Reopened in Telegram, but not saved in the task store ({e}); /reopen again later records it.")
         try:
-            self.h.bot.edit_topic(thread, task["name"])
+            self.h.bot.edit_topic(thread, task["name"], **self._kw())
         except (telegram.TelegramError, ValueError) as e:
             self.h._log(f"topic name not restored ({e})")
         self._say(thread, "Reopened.")

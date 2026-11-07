@@ -67,7 +67,7 @@ def split_text(text, limit=LIMIT):
 
 class Bot:
     def __init__(self, token, owners, api_base="https://api.telegram.org", sleep=time.sleep, timeout=60,
-                 forum_chat_id=None, peer_bots=(), log=None):
+                 forum_chat_id=None, peer_bots=(), log=None, groups=(), her_id=None):
         if not TOKEN_SHAPE.match(token or ""):
             raise ValueError("telegram token does not look like <digits>:<secret>")
         if not owners:
@@ -82,6 +82,11 @@ class Bot:
                 raise ValueError("peer_bots must be numeric bot ids, not usernames")
             peers.add(p)
         self.peer_bots = peers
+        # groups: [{"chat_id": negative id, "owners": [...], "peer_bots": [...]}] - each listens to its own people only
+        self.groups = {}
+        for g in groups or ():
+            self.groups[int(g["chat_id"])] = ({int(o) for o in g.get("owners", ())}, {int(p) for p in g.get("peer_bots", ())})
+        self.her_id = int(her_id) if her_id is not None else None
         self._sleep = sleep
         self._timeout = timeout
         self.ignored = 0
@@ -127,7 +132,20 @@ class Bot:
         if (self.forum_chat_id is not None and chat.get("id") == self.forum_chat_id
                 and chat.get("type") == "supergroup" and chat.get("is_forum") is True):
             return "forum"
+        if chat.get("id") in self.groups and chat.get("type") == "supergroup":
+            return "forum"
         return None
+
+    def _may_speak(self, chat_id, sender_id, is_bot):
+        """who is heard in a chat: a group hears its own owners, its own peer bots and her; the legacy forum, as before"""
+        if chat_id in self.groups:
+            owners, peers = self.groups[chat_id]
+            if is_bot:
+                return sender_id in peers
+            return sender_id in owners or (self.her_id is not None and sender_id == self.her_id)
+        if is_bot:
+            return sender_id in self.peer_bots
+        return sender_id in self.owners
 
     def _guest_drop(self, update):
         """Guest Mode (a guest_message update, or a message carrying guest_query_id) is never heard: one log line."""
@@ -145,8 +163,8 @@ class Bot:
         if cq:                                  # a button tap: only an owner's (never a bot's), only where we listen
             sender, msg = cq.get("from") or {}, (cq.get("message") or {})
             chat = msg.get("chat") or {}
-            if (sender.get("id") in self.owners and not sender.get("is_bot") and isinstance(cq.get("data"), str)
-                    and self._where(chat, sender)):
+            if (not sender.get("is_bot") and isinstance(cq.get("data"), str) and self._where(chat, sender)
+                    and (self._may_speak(chat.get("id"), sender.get("id"), False) or sender.get("id") in self.owners)):
                 return Message(update["update_id"], chat["id"], "callback", text=cq["data"],
                                callback_id=str(cq.get("id", "")), thread_id=int(msg.get("message_thread_id") or 0),
                                from_id=sender["id"])
@@ -159,10 +177,12 @@ class Bot:
         if where is None:
             return None
         is_bot = bool(sender.get("is_bot"))
-        if is_bot:
-            if where != "forum" or sender.get("id") not in self.peer_bots:
+        if is_bot and where != "forum":
+            return None
+        if where == "private":
+            if is_bot or sender.get("id") not in self.owners:
                 return None
-        elif sender.get("id") not in self.owners:
+        elif not self._may_speak(chat.get("id"), sender.get("id"), is_bot):
             return None
         fwd = any(k in m for k in ("forward_origin", "forward_from", "forward_from_chat", "forward_date"))
         extra = dict(thread_id=int(m.get("message_thread_id") or 0), from_id=sender["id"], from_bot=is_bot)
@@ -190,7 +210,7 @@ class Bot:
     # ---------- out ----------
     def _check(self, chat_id):
         c = int(chat_id)
-        if c not in self.owners and c != self.forum_chat_id:
+        if c not in self.owners and c != self.forum_chat_id and c not in self.groups:
             raise PermissionError("herald only writes to its owners and its forum")
 
     @staticmethod
@@ -248,13 +268,17 @@ class Bot:
         return out_path
 
     # ---------- forum topics (no delete, on purpose) ----------
-    def _forum(self):
+    def _forum(self, chat_id=None):
+        if chat_id is not None:
+            if int(chat_id) not in self.groups and int(chat_id) != self.forum_chat_id:
+                raise PermissionError("herald makes topics only in its own groups")
+            return int(chat_id)
         if self.forum_chat_id is None:
             raise ValueError("forum topics need forum_chat_id")
         return self.forum_chat_id
 
-    def create_topic(self, name, color=None):
-        chat = self._forum()
+    def create_topic(self, name, color=None, chat_id=None):
+        chat = self._forum(chat_id)
         _need_name(name)
         if color is not None and color not in TOPIC_COLOURS:
             raise ValueError("topic icon colour must be one of Telegram's six")
@@ -263,16 +287,16 @@ class Bot:
             params["icon_color"] = color
         return int((self._call("createForumTopic", params) or {})["message_thread_id"])
 
-    def edit_topic(self, thread_id, name):
+    def edit_topic(self, thread_id, name, chat_id=None):
         _need_name(name)
-        self._call("editForumTopic", {"chat_id": self._forum(), "message_thread_id": int(thread_id),
+        self._call("editForumTopic", {"chat_id": self._forum(chat_id), "message_thread_id": int(thread_id),
                                       "name": name[:TOPIC_NAME_LIMIT]})
 
-    def close_topic(self, thread_id):
-        self._call("closeForumTopic", {"chat_id": self._forum(), "message_thread_id": int(thread_id)})
+    def close_topic(self, thread_id, chat_id=None):
+        self._call("closeForumTopic", {"chat_id": self._forum(chat_id), "message_thread_id": int(thread_id)})
 
-    def reopen_topic(self, thread_id):
-        self._call("reopenForumTopic", {"chat_id": self._forum(), "message_thread_id": int(thread_id)})
+    def reopen_topic(self, thread_id, chat_id=None):
+        self._call("reopenForumTopic", {"chat_id": self._forum(chat_id), "message_thread_id": int(thread_id)})
 
     def send_action(self, chat_id, action="typing"):
         self._check(chat_id)

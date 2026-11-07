@@ -13,12 +13,12 @@ import threading
 import time
 import traceback
 
-from . import agents, decisions, doctor, engine, forum as forum_mod, hearing, jev, learning, notebook, recall, room, room_web, team_skills, speak_first, telegram, voice
+from . import agents, decisions, doctor, engine, forum as forum_mod, groups as groups_mod, hearing, jev, learning, notebook, recall, room, room_web, team_skills, speak_first, telegram, voice
 
 KEYS = {"owners", "workspace", "control", "agents_dir", "model", "max_turns", "max_budget_usd", "timeout_s", "tools",
         "persona_file", "voice", "speak_first", "jobs", "hearing", "max_usd_per_day", "agents", "room", "team_skills",
         "jev", "forum_chat_id", "peer_bots", "max_bot_hops", "bot_turns_per_hour", "bot_turns_per_hour_forum",
-        "bot_reply_gap_s"}
+        "bot_reply_gap_s", "groups_file"}
 BOT_LIMIT_KEYS = ("max_bot_hops", "bot_turns_per_hour", "bot_turns_per_hour_forum", "bot_reply_gap_s")
 SKILLS_KEYS = {"repo", "role"}
 JEV_KEYS = {"learn", "route_simple", "route_bar"}   # both send text to TypeSafe: off unless written here
@@ -100,6 +100,11 @@ def load_config(path):
                               or not 0 < jc["route_bar"] <= 1):
         raise ValueError(f"jev.route_bar must be a number in (0, 1], got {jc['route_bar']!r}")
     _forum_keys(cfg)
+    if "groups_file" in cfg:
+        if not isinstance(cfg["groups_file"], str) or not cfg["groups_file"]:
+            raise ValueError(f"groups_file must be a path, got {cfg['groups_file']!r}")
+        cfg["groups_file"] = os.path.abspath(cfg["groups_file"])
+        groups_mod.load_groups(cfg["groups_file"])
     if not cfg.get("owners"):
         raise ValueError("owners must not be empty")
     # Telegram ids are numbers; "1001" written as a string once left the bot silently deaf
@@ -133,9 +138,19 @@ def load_config(path):
     for k in ("persona_file", "agents_dir"):
         if cfg.get(k):
             cfg[k] = os.path.abspath(cfg[k])
-            if _within(os.path.normcase(os.path.realpath(cfg[k])), ws):
+            if groups_mod.inside_workspace(cfg[k], cfg["workspace"]):
                 raise ValueError(f"{k} must be outside the workspace: the model could rewrite it")
+    if cfg.get("groups_file") and cfg.get("forum_chat_id") is not None:
+        raise ValueError(MIX_REFUSAL)
+    # groups.json holds owners, her_id and peer_bots: where the model can write, it could promote itself (F3, same rule)
+    if cfg.get("groups_file") and groups_mod.inside_workspace(cfg["groups_file"], cfg["workspace"]):
+        raise ValueError("groups_file must be outside the workspace: the model could rewrite who leads a group")
+    if cfg.get("groups_file"):
+        groups_mod.check_personas(groups_mod.load_groups(cfg["groups_file"])[1], cfg["workspace"])
     return cfg
+
+
+MIX_REFUSAL = "forum_chat_id and groups_file together: move the forum into groups.json"
 
 
 def _within(path, root):
@@ -199,7 +214,8 @@ class Herald:
                  max_usd_per_day=None, room_agents=None, room_judge=None, room_budget=None, room_roles=None,
                  room_sync=False, decision_ttl_s=24 * 3600, now=time.time, learn_min_sessions=2, skills_repo=None,
                  skills_role=None, jev_judge=None, jev_learn=False, route_simple=None, route_bar=ROUTE_BAR,
-                 forum_chat_id=None, peer_bots=(), max_bot_hops=6, bot_turns_per_hour=10, bot_reply_gap_s=5, bot_turns_per_hour_forum=30):
+                 forum_chat_id=None, peer_bots=(), max_bot_hops=6, bot_turns_per_hour=10, bot_reply_gap_s=5, bot_turns_per_hour_forum=30,
+                 groups_file=None):
         # Jev's two opt-in jobs outside the room: the /learn sieve and the model router (README, «Jev»)
         self.jev_judge, self.jev_learn, self.route_simple, self.route_bar = jev_judge, jev_learn, route_simple, route_bar
         self.last_route = None                          # (model, probability) of the last routed turn, for /status
@@ -226,10 +242,21 @@ class Herald:
         self._last_prompt = None
         self.now = now
         # task topics + peer bots (forum.py); None = the private chat only, as before
+        if forum_chat_id is not None and groups_file:
+            raise ValueError(MIX_REFUSAL)
         self.forum_chat_id = forum_chat_id
         self.forum = (forum_mod.Forum(self, forum_chat_id, peer_bots, max_bot_hops, bot_turns_per_hour, bot_reply_gap_s,
                                        per_hour_forum=bot_turns_per_hour_forum)
                       if forum_chat_id is not None else None)
+        self.forums = {forum_chat_id: self.forum} if self.forum else {}     # chat id -> Forum: the legacy one and every group
+        self.her_id = None
+        if groups_file:
+            self.her_id, glist = groups_mod.load_groups(groups_file)
+            groups_mod.check_personas(glist, workspace)
+            for g in glist:
+                self.forums[g["chat_id"]] = forum_mod.Forum(
+                    self, g["chat_id"], g["peer_bots"], max_bot_hops, bot_turns_per_hour, bot_reply_gap_s,
+                    per_hour_forum=bot_turns_per_hour_forum, group=g, her_id=self.her_id)
 
     def _abortable(self):
         """Can this engine be told to stop mid-turn? (looked up at each turn: the engine can be swapped)"""
@@ -239,28 +266,31 @@ class Herald:
             return False
 
     # ---------- state ----------
-    def _state(self):
+    def _state(self, path=None):
+        path = path or self.state_path
         fresh = {"session": None, "voice": "off", "offset": 0}
-        if os.path.exists(self.state_path):
+        if os.path.exists(path):
             try:
-                with open(self.state_path, encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     s = json.load(f)
                 if isinstance(s, dict) and _valid_state({**fresh, **s}):
                     return {**fresh, **s}
             except (ValueError, OSError):
                 pass
             # unreadable: keep it for a look and start fresh (offset 0 only re-reads updates Telegram still holds)
-            os.replace(self.state_path, self.state_path + ".bad")
+            os.replace(path, path + ".bad")
             self._log("herald.json was unreadable: moved to herald.json.bad, started fresh")
         return fresh
 
-    def _save(self, **kw):
-        s = self._state()
+    def _save(self, _path=None, **kw):
+        path = _path or self.state_path
+        s = self._state(path)
         s.update(kw)
-        tmp = self.state_path + ".tmp"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(s, f)
-        os.replace(tmp, self.state_path)
+        os.replace(tmp, path)
 
     # ---------- out ----------
     def _reply(self, chat_id, text, spoken=None):
@@ -338,10 +368,10 @@ class Herald:
         settle(self.costs_path, rid, held, {"day": time.strftime("%Y-%m-%d"), "t": time.strftime("%H:%M:%S"),
                                             "usd": round(max(new, 0.0), 6), "kind": "room", "ok": True})
 
-    def _route(self, prompt):
+    def _route(self, prompt, state_path=None):
         """The small model for a message Jev judges simple; None = the configured one. The owner's /model always wins."""
         self.last_route = None
-        if not (self.route_simple and self.jev_judge and prompt) or self._state().get("model"):
+        if not (self.route_simple and self.jev_judge and prompt) or self._state(state_path).get("model"):
             return None
         p = self.jev_judge.simple(prompt)
         if p is not None and p >= self.route_bar:
@@ -349,30 +379,35 @@ class Herald:
             return self.route_simple
         return None
 
-    def _system(self, prompt=None, extra="", peer=False):
+    def _system(self, prompt=None, extra="", peer=False, scope=None):
         """persona + what the owner approved, rebuilt before every turn, kept in control/; the owner's /model;
         else Jev's route to the small model for a simple message."""
         if self.engine_cfg is None:
             return None
         cfg = self.engine_cfg
-        if self._state().get("model"):
-            cfg = dataclasses.replace(cfg, model=self._state()["model"])
-        elif self._route(prompt):
+        state_path = scope.state_path if scope else self.state_path
+        persona_file = scope.persona_file if scope else self.persona_file
+        nb = scope.nb if scope else self.nb
+        sys_dir = scope.control if scope else self.control
+        if self._state(state_path).get("model"):
+            cfg = dataclasses.replace(cfg, model=self._state(state_path)["model"])
+        elif self._route(prompt, state_path):
             cfg = dataclasses.replace(cfg, model=self.route_simple)
         if self.max_usd_per_day is not None:            # a turn never gets more than today has left
             left = self.max_usd_per_day - self._today()[0]
             cfg = dataclasses.replace(cfg, max_budget_usd=max(MIN_TURN, min(cfg.max_budget_usd, round(left, 4))))
         persona = ""
-        if self.persona_file and os.path.exists(self.persona_file):
-            with open(self.persona_file, encoding="utf-8") as f:
+        if persona_file and os.path.exists(persona_file):
+            with open(persona_file, encoding="utf-8") as f:
                 persona = f.read()
         if peer:                                        # another bot's turn: persona only, never the owner's notebook or skills
             text = persona.rstrip() + "\n\n" + BUTTONS_HINT + "\n" + REMEMBER_HINT
         else:
-            text = self.nb.compose(persona).rstrip() + "\n\n" + BUTTONS_HINT + "\n" + REMEMBER_HINT + ("\n\n" + self.skills_toc if self.skills_toc else "")
+            text = (nb.compose(persona) if nb else persona).rstrip() + "\n\n" + BUTTONS_HINT + "\n" + REMEMBER_HINT + ("\n\n" + self.skills_toc if self.skills_toc else "")
         if extra:
             text += "\n\n" + extra
-        path = os.path.join(self.control, "system.md")
+        os.makedirs(sys_dir, exist_ok=True)
+        path = os.path.join(sys_dir, "system.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         return dataclasses.replace(cfg, append_system_prompt_file=path)
@@ -389,9 +424,9 @@ class Herald:
                 done.wait(2)
                 continue
             for m in msgs:
-                if m.kind == "text" and not m.forwarded and _command_word(m.text) == "/stop" and self._may_stop(m):
-                    if self.forum and m.chat_id == self.forum.chat_id:
-                        self.forum.stop(m)
+                if m.kind == "text" and not m.forwarded and self._stop_word(m) == "/stop" and self._may_stop(m):
+                    if m.chat_id in self.forums:
+                        self.forums[m.chat_id].stop(m)
                     else:
                         self._command(m.chat_id, "/stop")
                 else:
@@ -400,12 +435,19 @@ class Herald:
             if msgs:
                 self._keep_inflight()
 
+    def _stop_word(self, m):
+        """The command word of a message; her «!stop» is her «/stop» (the same path, in the middle of a turn too)."""
+        text = (m.text or "").translate(ZERO_WIDTH).strip()
+        if self.her_id is not None and m.from_id == self.her_id and text.startswith("!"):
+            text = "/" + text[1:]
+        return _command_word(text)
+
     def _may_stop(self, m):
         """A bot never stops anything; in the forum only an owner does (the private chat is filtered by the Bot layer)."""
         if m.from_bot:
             return False
-        if self.forum and m.chat_id == self.forum.chat_id:
-            return m.from_id in self.owners
+        if m.chat_id in self.forums:
+            return self.forums[m.chat_id].may_stop(m)
         return True
 
     def _keep_inflight(self):
@@ -420,7 +462,7 @@ class Herald:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             rows = [dataclasses.asdict(m) for m in todo]
-            if self.forum_chat_id is None:                # no forum: the file stays as an older herald wrote it
+            if not self.forums:                           # no forum: the file stays as an older herald wrote it
                 for r in rows:
                     for k in ("thread_id", "from_id", "from_bot"):
                         r.pop(k, None)
@@ -454,17 +496,17 @@ class Herald:
         if self._pending_offset is not None:
             self._save(offset=self._pending_offset)
 
-    def _turn(self, prompt, workspace=None, session=_KEEP, extra="", peer=False):
+    def _turn(self, prompt, workspace=None, session=_KEEP, extra="", peer=False, scope=None):
         """One engine turn. A topic passes its own folder and session (and saves that session itself)."""
         kw = {}
         done = threading.Event()
         watcher = None
         if self._abortable():
-            kw["should_abort"] = lambda: os.path.exists(self.stop_path)
+            kw["should_abort"] = (scope.stopped if scope else (lambda: os.path.exists(self.stop_path)))
             if hasattr(self.bot, "poll"):
                 watcher = threading.Thread(target=self._watch, args=(done,), daemon=True)
                 watcher.start()
-        cfg = self._system(prompt, extra, peer=peer)
+        cfg = self._system(prompt, extra, peer=peer, scope=scope)
         if peer and cfg is not None:
             cfg = dataclasses.replace(cfg, tools=list(PEER_TOOLS))
         held = float(getattr(cfg, "max_budget_usd", 0) or 0) if self.max_usd_per_day is not None else 0.0
@@ -495,10 +537,15 @@ class Herald:
         -> {thread: {"tail": str|None, "age_s": float (-1 when unknown), "source": "tail"|"prev"|"none"}}"""
         import datetime
         out = {}
-        if not self.forum:
-            return out
-        for thread in self.forum._tasks().get("tasks", {}):
-            source, text = forum_mod.read_tail(self.control, thread)
+        for f in self.forums.values():
+            out.update(self._resume_forum(f))
+        return out
+
+    def _resume_forum(self, f):
+        import datetime
+        out = {}
+        for thread in f._tasks().get("tasks", {}):
+            source, text = forum_mod.read_tail(f.control, thread)
             age = None
             if text:
                 at = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("turn_at:")), "")
@@ -512,7 +559,8 @@ class Herald:
                     age = None
             if source == "prev":
                 self._log(f"tail of topic {thread} unreadable; used the {source} generation")
-            out[str(thread)] = {"tail": text, "age_s": age if age is not None else -1.0, "source": source}
+            out[str(thread) if f.group is None else f"{f.chat_id}:{thread}"] = {
+                "tail": text, "age_s": age if age is not None else -1.0, "source": source}
         return out
 
     def _log(self, line):
@@ -522,8 +570,8 @@ class Herald:
 
     # ---------- in ----------
     def handle(self, m):
-        if self.forum and m.chat_id == self.forum.chat_id:
-            return self.forum.handle(m)
+        if m.chat_id in self.forums:
+            return self.forums[m.chat_id].handle(m)
         if m.chat_id not in self.owners:
             return
         if m.kind == "text" and not m.forwarded and _command_word(m.text) == "/stop":
@@ -1151,8 +1199,10 @@ def build(cfg, token):
     gate = speak_first.Gate(speak_first.Limits(**(cfg.get("speak_first") or {})),
                             os.path.join(cfg["control"], "speak.json"), os.path.join(cfg["control"], "STOP"))
     jobs = [speak_first.Job(**j) for j in cfg.get("jobs", [])]
+    gfile = cfg.get("groups_file")
+    her, glist = groups_mod.load_groups(gfile) if gfile else (None, [])
     bot = telegram.Bot(token, owners=set(cfg["owners"]), forum_chat_id=cfg.get("forum_chat_id"),
-                       peer_bots=cfg.get("peer_bots") or ())
+                       peer_bots=cfg.get("peer_bots") or (), groups=glist, her_id=her)
     hear = download = None
     hc = cfg.get("hearing")
     if hc is not None:
@@ -1172,6 +1222,7 @@ def build(cfg, token):
                route_simple=(cfg.get("jev") or {}).get("route_simple"),
                route_bar=(cfg.get("jev") or {}).get("route_bar", ROUTE_BAR),
                forum_chat_id=cfg.get("forum_chat_id"), peer_bots=cfg.get("peer_bots") or (),
+               groups_file=gfile,
                **{k: cfg[k] for k in BOT_LIMIT_KEYS if k in cfg})
     bot.log = h._log                                  # the bot's drops (guest messages) reach control/audit.log
     return h, ecfg
