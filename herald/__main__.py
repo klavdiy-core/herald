@@ -97,7 +97,8 @@ def main(argv=None):
         return 0
     if a.cmd == "doctor":
         ecfg = run.engine_config(cfg)            # the configured model and tools, token or not
-        checks = doctor.run_all(ecfg, token, cfg["owners"], (cfg.get("voice") or {}).get("model"))
+        checks = doctor.run_all(ecfg, token, cfg["owners"], (cfg.get("voice") or {}).get("model"),
+                                forum_chat_id=cfg.get("forum_chat_id"))
         print(doctor.render(checks))
         return 0 if doctor.may_start(checks) else 1
     if a.cmd == "say":

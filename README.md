@@ -82,16 +82,107 @@ a test that was red before:
 
 ## Telegram
 
-- Only your private chat is heard: the chat id must equal the sender id and be in `owners`. Strangers, groups, edits
-  and bots are counted and never answered.
-- Forwarded messages are handed to the model as data, not instructions, inside a fence with a fresh random tag per
-  message (forwarded text cannot close it early); a forwarded `/stop` is not a command. `/stop@yourbot` and `/STOP` work.
+- By default only your private chat is heard: the chat id must equal the sender id and be in `owners`. Strangers,
+  groups, edits and bots are counted and never answered. Two things widen this, and only when you write them in the
+  config: one group with topics (`forum_chat_id`, see [Tasks as topics](#tasks-as-topics)) and a list of bots
+  allowed to speak there (`peer_bots`, see [Other bots in your task group](#other-bots-in-your-task-group)). Any
+  other group, and any bot not on the list, is still never answered.
+- Forwarded messages, in the private chat and in task topics alike, are handed to the model as data, not instructions,
+  inside a fence with a fresh random tag per message (forwarded text cannot close it early); a forwarded `/stop` is not a command. `/stop@yourbot` and `/STOP` work.
 - Commands: `/stop` (no turns, no speaking first, until `/resume`) · `/resume` · `/new` (fresh conversation) ·
   `/voice off|voice|both` · `/status` · `/usage` · `/retry` · `/model NAME|default` · `/room TOPIC` · `/recall WORDS`.
 - The token never appears in errors or logs.
 - `/stop` is handled before anything else and needs no state: a broken state file cannot block it. A state file that
   cannot be read is kept as `*.bad`; speaking first then stays quiet until you write. An update that crashes its
   handler is logged and passed, never polled again in a loop.
+
+## Tasks as topics
+
+One group, many tasks: each topic is one task with its own Claude conversation and its own folder. An open topic
+is unfinished work; a task is closed only when you press "Yes, close".
+
+**Turn it on**
+1. Make a group, turn on **Topics** in its settings (Telegram makes it a supergroup).
+2. Add the bot and make it an admin with the **Manage Topics** right.
+3. Put the group's id in the config: `"forum_chat_id": -100...` (a negative number; a string of digits is read as a
+   number, anything else stops the start with a clear error).
+4. Run `python -m herald doctor --config control/config.json`. Without Topics, or without the right, it prints one
+   line saying what to switch on; your private chat keeps working either way, only `/task` would fail.
+
+**Use it**
+- In **General**: `/task <name>` opens a new topic for the task · `/tasks` lists the open ones with links ·
+  `/new` here only reminds you of `/task`. Anything else in General gets "commands only here".
+- In a **task topic** you talk as in the private chat; the turn runs in `workspace/tasks/<topic id>/` and continues
+  that topic's conversation only. Two topics never share a conversation.
+- `/new` in a topic: a fresh conversation for this topic alone; the others are untouched.
+- `/done`: the bot asks "Close as done?" with two buttons. Nothing closes until **you** press "Yes, close"; a tap
+  by anyone else does nothing. On yes the topic is renamed `✅ <name>`, closed, and a line with its link goes to a
+  topic named "Done" (the bot creates it once).
+- `/reopen`: opens the topic again and takes the `✅ ` off. A message in a closed topic starts no turn; the bot
+  answers that the topic is closed.
+- `/stop` and `/resume` work in topics as in the private chat (the same stop); `/status` in a topic shows what
+  bots' messages are waiting there.
+- Tasks live in `control/tasks.json`; a file that cannot be read is kept as `tasks.json.bad`.
+
+**What it does not do**
+- No folders: Telegram has no folders for topics. A finished task is a closed topic with ✅ plus a line in the "Done" topic.
+- One group per herald. Messages from any other group are ignored.
+- It never deletes a topic: the code has no call that deletes one.
+- A topic the bot did not open with `/task` is not a task: messages there are ignored.
+- Voice messages in task topics are not heard yet: the bot answers with one line saying topics are text only.
+  Voice works in the private chat.
+
+## Other bots in your task group
+
+Another bot can work in a task next to you, for example a second herald. This is off unless you list it:
+`"peer_bots": [123456789]`, **numeric bot ids only** (a username can change hands; an id cannot; usernames are refused
+at start). `peer_bots` without `forum_chat_id` is refused too.
+
+A listed bot is heard only in your task group, only inside a topic you opened with `/task`, and only while it is
+open. It cannot start a task, close, reopen, stop or resume one, press buttons, or use any command: a bot's message
+starting with `/` is ignored. Its text reaches Claude marked as a colleague's information, never as your order.
+A turn started by another bot runs with your persona only, without your approved memory and skills (see
+[Learning](#learning-it-gets-better-at-your-work-and-you-approve-every-lesson)): what you taught herald stays out of
+turns that a bot can trigger. It does continue the topic's conversation, so it can see what was said in that topic
+before; keep in a topic with bots only what you would show them.
+Bots in General and in private chats are never heard.
+
+If `control/tasks.json` cannot be read, herald moves it aside to `tasks.json.bad` (or `tasks.json.bad1`, `.bad2`…
+when that name is taken) and says so in `control/audit.log`. If it can be neither read nor moved, the task store is
+locked: topics answer with one line, no turn starts and nothing is written until the file is readable again.
+`/stop` and `/resume` work in any topic even then.
+
+Telegram asks bots that talk to bots to guard against loops; herald does:
+- **Depth:** after 6 bot turns in a row in a topic with no word from you, herald stops answering there and says once
+  "Waiting for a human". Your next message in the topic resets the count.
+- **Pace:** at most one turn per 5 seconds for each bot, across all topics; what comes faster is held and answered
+  together with that bot's next message in the topic that gets a turn, not as a queue of turns. Held lines are
+  dropped when you write in the topic, send `/new` or `/stop` there, or close it.
+- **Repeats:** the same text from the same bot in the same topic within 10 minutes is ignored.
+- **Per hour:** at most 10 bot turns per topic and 30 in the whole group in an hour. Once a limit is reached, bots
+  get no turns until you write: in that topic for the topic limit, in any topic for the group limit. With the default
+  depth of 6 the depth limit always comes first in a single topic; the per-topic hourly limit matters only if you
+  raise `max_bot_hops`.
+- **Money:** bot turns spend the same daily cap (`max_usd_per_day`) as yours; when it is used up, nobody gets a turn.
+- **Your stop wins:** after `/stop` no bot gets a turn until you `/resume`.
+
+A message from you in a topic starts that topic's counts and the group's hourly count again, and drops what bots had
+waiting there (so do `/new`, `/stop` and closing the topic).
+
+The numbers above are defaults. To change them, set these keys in the config (only together with `forum_chat_id`;
+whole numbers): `max_bot_hops` (6) · `bot_turns_per_hour` (10, per topic) · `bot_turns_per_hour_forum` (30, the whole
+group) · `bot_reply_gap_s` (5, may be 0). The others must be at least 1. The 10-minute repeat window is fixed. The
+counters live in memory: a restart clears them.
+
+**On Telegram's side** (see [Bot-to-Bot Communication](https://core.telegram.org/bots/features#bot-to-bot-communication)):
+bots generally do not see other bots' messages; Bot-to-Bot Communication Mode is switched on in @BotFather. In a
+group, a bot sees another bot's message that mentions it in a command (`/command@yourbot`) or replies to it, if the
+mode is on for at least one of the two. To see all other bots' messages, the receiving bot needs the mode on and must
+be an admin of the group or have Group Privacy Mode turned off. Privacy Mode is on by default for every bot except admins, which receive all messages. After you turn Privacy Mode
+off, remove the bot from the group and add it again: the change takes effect only then.
+
+**Guest messages** (Bot API 10.0) are not requested: herald asks Telegram only for messages and button taps, so a
+guest message never reaches a turn.
 
 ## Hearing: voice and text in one conversation
 
@@ -339,4 +430,12 @@ changed the next answer), and `learn` on three real Claude Code sessions.
 
 ## License
 
-MIT
+herald is source-available under [Creative Commons Attribution-NoDerivatives 4.0 International](https://creativecommons.org/licenses/by-nd/4.0/)
+(CC BY-ND 4.0), full text in `LICENSE`, copyright klavdiy-core.
+
+- **Free for any use, including commercial.** Run it, use it at work, share unchanged copies with the credit kept.
+- **Modified versions may not be published.** Change it for yourself as you like; do not share the changed version.
+- **The name is not licensed.** "herald" and the klavdiy-core name are not granted by this license; do not publish
+  herald under another name or present it as your own.
+- **Earlier versions remain MIT.** Every commit before this license change was released under the MIT License and
+  stays under it.

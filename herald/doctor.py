@@ -94,6 +94,25 @@ def check_token_live(bot):
     return Check("telegram", True, f"bot @{me.get('username', '?')}")
 
 
+def check_forum(bot, chat_id):
+    """Topics need: a supergroup with Topics on, and the bot an admin with Manage Topics. A fault here is a warning:
+    private chats still work, only /task would fail."""
+    def warn(why):
+        return Check("forum", False, why, fatal=False)
+    fix = "make the bot an admin of the group with the Manage Topics right"
+    try:
+        chat = bot._call("getChat", {"chat_id": chat_id}) or {}
+        if chat.get("type") != "supergroup" or chat.get("is_forum") is not True:
+            return warn("the group is not a forum: turn on Topics in the group settings (it must be a supergroup)")
+        me = bot._call("getMe") or {}
+        member = bot._call("getChatMember", {"chat_id": chat_id, "user_id": me.get("id")}) or {}
+    except telegram.TelegramError as e:
+        return warn(f"cannot check the forum group: {e}")
+    if member.get("status") == "creator" or (member.get("status") == "administrator" and member.get("can_manage_topics")):
+        return Check("forum", True, "supergroup with Topics; the bot can manage topics")
+    return warn(f"the bot cannot manage topics: {fix}")
+
+
 def check_owners(owners):
     if not owners:
         return Check("owners", False, "no owners: herald would answer no one")
@@ -222,12 +241,15 @@ def render(checks):
     return "\n".join(lines)
 
 
-def run_all(cfg, token, owners, voice_model, live=True):
+def run_all(cfg, token, owners, voice_model, live=True, forum_chat_id=None):
     def help_text():
         return subprocess.run(list(cfg.claude_cmd) + ["--help"], capture_output=True, text=True, timeout=30).stdout
     checks = [check_claude_flags(help_text), check_token(token), check_owners(owners), check_tools(cfg)]
     if live and checks[1].ok and owners:
-        checks.append(check_token_live(telegram.Bot(token, owners=set(owners))))
+        bot = telegram.Bot(token, owners=set(owners))
+        checks.append(check_token_live(bot))
+        if forum_chat_id is not None and checks[-1].ok:
+            checks.append(check_forum(bot, forum_chat_id))
     ff = check_ffmpeg()
     checks += [ff, check_voice(voice_model, ff.ok)]
     if live and checks[0].ok:
