@@ -45,7 +45,9 @@ def for_role(repo, role):
     roles_dir = os.path.join(repo, "roles")
     path = os.path.join(roles_dir, f"{role}.md")
     if not os.path.isfile(path):
-        return [], []                                   # a role without a file simply has no team skills
+        # NOT silent (Berkut M-14829): a mistyped role used to start with no team skills and nothing in any log said why
+        why = "the repo has no roles/ folder" if not os.path.isdir(roles_dir) else "no such role file"
+        return [], [f"role {role!r}: roles/{role}.md not found ({why}); starting with no team skills"]
     names, warnings = [], []
     with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
