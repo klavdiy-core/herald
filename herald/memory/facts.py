@@ -48,12 +48,12 @@ def read(path):
         with open(path, "rb") as f:
             data = f.read()
     except OSError:
-        raise Unavailable("the facts file cannot be read") from None
+        raise Unavailable("file not readable") from None
     lines = data.split(b"\n")
     try:
         start = next(i for i, raw in enumerate(lines) if raw.rstrip(b"\r").decode("utf-8", "replace") == MARK)
     except StopIteration:
-        return [], [], len([x for x in lines if x.strip()]), []
+        raise Unavailable("no marker") from None        # each refusal says its own reason (review of 5d3c3b3)
     archive = len([x for x in lines[:start] if x.strip()])
     facts, bad, mismatched, seen = [], [], [], set()
     for raw in lines[start + 1:]:
@@ -200,8 +200,10 @@ def cli(argv, out=None, err=None):
         if args.command != "import" and not os.path.isfile(os.path.join(args.store, "memory.sqlite")):
             raise Unavailable("no store")
         if args.command != "tail":
-            if not args.file or not os.path.isfile(args.file):
-                raise Unavailable("no facts file")
+            if not args.file:
+                raise Unavailable("no --file")
+            if not os.path.isfile(args.file):
+                raise Unavailable("file not readable")
             facts, bad, _, mismatched = read(args.file)
             if not (facts or bad or mismatched):
                 raise Unavailable("no fact under the marker")

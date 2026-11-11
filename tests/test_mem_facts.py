@@ -253,6 +253,17 @@ class Refusals(Base):
     def test_a_file_without_the_marker_has_no_fact(self):
         with open(self.file, "w", encoding="utf-8") as f:
             f.write("just an archive\n")
+        self.assertEqual(self.imp(), (7, ["FACTS UNAVAILABLE: no marker"]))
+
+    def test_each_refusal_says_its_own_reason(self):
+        self.write([line("one")])
+        missing = os.path.join(self.tmp.name, "none.md")
+        self.assertEqual(self.run_cli("import", "--store", self.store_root, "--subject", SUBJECT),
+                         (7, ["FACTS UNAVAILABLE: no --file"]))
+        self.assertEqual(self.run_cli("import", "--file", missing, "--store", self.store_root, "--subject", SUBJECT),
+                         (7, ["FACTS UNAVAILABLE: file not readable"]))
+        with open(self.file, "w", encoding="utf-8") as f:
+            f.write(facts.MARK + "\n> header only\n")
         self.assertEqual(self.imp(), (7, ["FACTS UNAVAILABLE: no fact under the marker"]))
 
     def test_tail_is_newest_first(self):
