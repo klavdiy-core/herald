@@ -14,8 +14,8 @@ dependencies = []
 [project.scripts]
 herald = "herald.__main__:main"
 
-[tool.setuptools]
-packages = ["herald"]
+[tool.setuptools.packages.find]
+include = ["herald", "herald.*"]      # every subpackage (herald.memory), not only the top one
 
 [tool.setuptools.package-data]
 herald = ["persona.example.md"]
