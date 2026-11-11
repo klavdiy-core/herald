@@ -25,6 +25,9 @@ def main(argv=None):
     if args[:2] == ["mem", "golden"]:            # python -m herald mem golden --set S (--store R | --recall-db D) [--k N]
         from . import golden
         return golden.main(args[2:])
+    if args[:2] == ["mem", "facts"]:             # python -m herald mem facts import|check|tail ... (organ 6, main-only)
+        from .memory import facts
+        return facts.cli(args[2:])
     if args[:2] == ["mem", "diary"]:             # python -m herald mem diary import|check|last ... (organ 2, main-only)
         from .memory import diary
         return diary.cli(args[2:])
