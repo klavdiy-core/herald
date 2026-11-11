@@ -183,7 +183,7 @@ class Import(Base):
         s.erase(mid, "asked", OP, **MAIN)
         s.close()
         code, lines = self.imp()
-        self.assertEqual((code, lines[0]), (4, "2026-11-01-101500--heron-day\terased"))
+        self.assertEqual((code, lines[0]), (0, "2026-11-01-101500--heron-day\terased"))
         self.assertEqual(self.records(), [])
 
     def test_read_after_write_is_required(self):
@@ -301,7 +301,7 @@ class ControlRound1(Base):
         self.erase_only_record()
         before = self.evidence_rows()
         code, lines = self.imp()
-        self.assertEqual((code, lines[0]), (4, "2026-11-01-101500--heron-day\terased"))
+        self.assertEqual((code, lines[0]), (0, "2026-11-01-101500--heron-day\terased"))
         self.assertEqual(self.evidence_rows(), before)
 
     def test_c4_check_names_an_erased_entry_and_stays_green(self):
@@ -317,7 +317,7 @@ class ControlRound1(Base):
         os.remove(path)
         entry(self.root, title="a new title", tags=["other"], body="a rewritten body")
         code, lines = self.imp()
-        self.assertEqual((code, lines[0]), (4, "2026-11-01-101500--heron-day\terased"))
+        self.assertEqual((code, lines[0]), (0, "2026-11-01-101500--heron-day\terased"))
         self.assertEqual(self.records(), [])
 
     def test_c6_an_unreadable_file_is_a_bad_entry_without_a_traceback(self):

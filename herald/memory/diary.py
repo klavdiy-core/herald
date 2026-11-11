@@ -166,8 +166,7 @@ def import_tree(store, root, emit, subject):
         if entry is None:               # a companion file: not an entry, as in diary.py
             continue
         if store.erased_id(memory_id_of(entry["id"]), reader_scope="main"):    # before any evidence is written
-            emit(entry["id"], "erased")
-            counts["refused"] += 1
+            emit(entry["id"], "erased")     # main's own decision: said, never a refusal (same rule as organ 6)
             continue
         known = have.get(entry["id"], [])
         if entry["sha"] in known:
