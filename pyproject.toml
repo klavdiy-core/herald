@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herald"
+dynamic = ["version"]
+description = "Run Claude Code from Telegram: one bot, budgets, a canary, voice, and a room for your agents."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+herald = "herald.__main__:main"
+
+[tool.setuptools]
+packages = ["herald"]
+
+[tool.setuptools.package-data]
+herald = ["persona.example.md"]
+
+[tool.setuptools.dynamic]
+version = { attr = "herald.__version__" }
