@@ -5,6 +5,12 @@ here, everything else stays with the private-chat code. Nothing in here deletes 
 
 State on disk: control/tasks.json {"tasks": {"<thread>": {name, session_id, state, created, closed_at}}, "done_topic": id|null}.
 State in memory only (a restart clears it): peer hop counts, dedup memory, hourly counters, held peer lines.
+
+Known limits (reviewed, not fixed):
+- The rise from tasks.json.prev looks for tasks.json.bad only: if moving a broken file to .bad failed for another reason
+  (a lock) and the numbered .bad1 move succeeded, a cut right after it starts empty.
+- A stale .bad left from an earlier, repaired incident makes a deliberate delete of tasks.json rise from .prev.
+- Not checked: forum races, cuts inside the notebook writers.
 """
 import hashlib
 import json
@@ -14,6 +20,7 @@ import shutil
 import tempfile
 
 from . import notebook, telegram
+from .memory import sources as memory_sources
 
 TASK_TAP = re.compile(r"^task:(done|keep):(\d+)$")
 DONE_TOPIC = "Done"            # English: the repo is public
@@ -78,8 +85,31 @@ def write_tail(control, thread, fields):
     _flush_dir(d)
 
 
-def read_tail(control, thread):
-    """-> (source, text): the tail if it holds all five keys, else the .prev, else none"""
+def thread_open(control, thread, reader_scope="worker"):
+    """May this scope read the thread? The label is inherited from the task. A closed thread is closed whole."""
+    if reader_scope not in ("worker", "main"):
+        raise ValueError("unknown reader scope")
+    if reader_scope == "main":
+        return True
+    known, path = memory_sources.load(), os.path.join(control, "tasks.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            entry = json.load(f)["tasks"].get(str(thread))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return known.roots is None          # no store: open only where no private layer is configured
+    if entry is None and known.roots is not None:
+        return False                        # a store restored from an older copy may have lost the label with the entry
+    labels = memory_sources.line_labels(json.dumps(entry))      # any case, any depth, as in every other reader
+    if not labels:
+        return known.scope_of(path) == "worker"
+    return all(known.scope_of(path, label) == "worker" for label in labels)
+
+
+def read_tail(control, thread, reader_scope="worker"):
+    """-> (source, text): the tail if it holds all five keys, else the .prev, else none. For a closed thread: none, exactly
+    as for a thread that does not exist, and nothing on disk is touched."""
+    if not thread_open(control, thread, reader_scope):
+        return "none", None
     base = os.path.join(control, "tails", f"{thread}.md")
     # .tmp is fsynced before any rename and is gone after a finished write, so a complete .tmp is ALWAYS the newest
     # generation (a cut before or between the two renames): finish that commit. An incomplete .tmp is a torn write: drop it.
@@ -217,8 +247,17 @@ class Forum:
             raise ValueError("valid JSON but not {tasks: {...}}")    # odd shape: same road as broken JSON
         except FileNotFoundError:
             self._store_locked = False          # a MISSING file does not rise from .prev: the atomic replace never leaves that state, only a human delete does
-        except (OSError, ValueError, AttributeError) as e:
+            if os.path.exists(self.path + ".bad"):          # ...or a cut right after a broken file was moved aside: the restore never ran
+                back = self._from_prev("cut after the broken file was moved to .bad")
+                if back is not None:
+                    return back
+        except OSError as e:                    # could not read it: that says nothing about the file, so it stays where it is
+            self._store_locked = True
+            self.h._log(f"tasks.json could not be read ({e}); not writing the task store until it can be")
+        except (ValueError, AttributeError) as e:
             try:
+                if os.path.exists(self.path + ".bad"):
+                    raise FileExistsError("an earlier broken file is kept there")
                 os.replace(self.path, self.path + ".bad")
                 self._store_locked = False                   # moved aside: a fresh store may be written
                 self.h._log(f"tasks.json unreadable ({e}); kept as .bad")
@@ -261,7 +300,20 @@ class Forum:
     def _from_prev(self, why):
         """tasks.json was unreadable (a power cut leaves it empty or half-written): rise from the previous generation and say so
         loudly in audit.log instead of handing back an empty store."""
-        data = self._valid(self.path + ".prev")
+        data = None
+        try:                                    # one read, one place: missing, unreadable and broken are told apart here
+            with open(self.path + ".prev", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            pass
+        except OSError as e:                    # held open is not lost: no writes, or the good generation is copied over two saves later
+            self._store_locked = True
+            self.h._log(f"TASK STORE: tasks.json unreadable ({why}) and tasks.json.prev could not be opened ({e}); not writing the task store until it can be")
+            return None
+        except ValueError:                      # empty, half-written or not UTF-8: broken, as before
+            pass
+        if not (isinstance(data, dict) and isinstance(data.get("tasks"), dict)):
+            data = None
         if data is None:
             self.h._log(f"TASK STORE LOST: tasks.json unreadable ({why}) and there is no readable tasks.json.prev; starting empty")
             return None
@@ -333,7 +385,11 @@ class Forum:
         self._say(thread, LOCKED_LINE)
         return True
 
-    def _dir(self, thread):
+    def _dir(self, thread, reader_scope="worker"):
+        if not thread_open(self.control, thread, reader_scope):
+            closed_empty = os.path.join(self.control, "closed_empty")      # the same empty folder for every closed thread
+            os.makedirs(closed_empty, exist_ok=True)
+            return closed_empty
         d = os.path.join(self.tasks_root, str(thread))
         os.makedirs(d, exist_ok=True)
         return d
@@ -551,7 +607,9 @@ class Forum:
             del self._held[k]
 
     # ---------- a turn in a topic ----------
-    def _turn_in(self, thread, text, data, task, extra="", peer=False):
+    def _turn_in(self, thread, text, data, task, extra="", peer=False, reader_scope="worker"):
+        if not thread_open(self.control, thread, reader_scope):
+            return                       # a model started in a closed folder would read everything in it
         h = self.h
         if h._over_budget():
             usd, _ = h._today()
@@ -561,10 +619,10 @@ class Forum:
         self._vetoed.discard(thread)
         try:
             if not peer:
-                before = snapshot(self._dir(thread))         # the owner's turn: what it writes is read from the disk
+                before = snapshot(self._dir(thread, reader_scope))         # the owner's turn: what it writes is read from the disk
             empty = tempfile.mkdtemp(prefix="peer_") if peer else None      # a peer never sees the topic's folder
             try:
-                r = h._turn(text, workspace=empty or self._dir(thread), session=None if peer else task.get("session_id"),
+                r = h._turn(text, workspace=empty or self._dir(thread, reader_scope), session=None if peer else task.get("session_id"),
                             extra=note, peer=peer, scope=self)
             finally:
                 if empty:
@@ -583,14 +641,17 @@ class Forum:
         if r.ok and r.session_id and not peer:               # a peer's session is never the topic's
             task["session_id"] = r.session_id
             try:
-                self._put(data)
+                latest = self._tasks()                       # what `data` holds is from before the turn: only the session changes
+                if str(thread) in latest["tasks"]:
+                    latest["tasks"][str(thread)]["session_id"] = r.session_id
+                    self._put(latest)
             except OSError as e:                             # a paid answer is never dropped because the store failed
                 h._log(f"task session not saved ({e}); the answer is sent anyway")
         shown = self._shown(r)
         self._say(thread, self._scrub(shown) if peer else shown)
         if not peer:                                         # the tail: the owner's turn only, after the answer reached the topic
             try:
-                files = written(before, snapshot(self._dir(thread)))
+                files = written(before, snapshot(self._dir(thread, reader_scope)))
                 if r.ok:
                     fields = _tail_fields(r.text, text, r.session_id, files, h.now())
                 else:                                        # stopped / timed out: what it wrote before dying is still listed

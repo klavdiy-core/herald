@@ -11,6 +11,7 @@ import time
 from collections import OrderedDict
 
 from . import learning
+from .memory import sources as memory_sources
 
 
 def safe(role):
@@ -58,14 +59,23 @@ def _merge(reports):
 def run(projects_dir, out_dir, since_hours=None, private=True, ignore=None, min_sessions=2):
     cutoff = time.time() - since_hours * 3600 if since_hours else 0
     by_role = OrderedDict()
+    known, closed = memory_sources.load(), set()
     for name in sorted(os.listdir(projects_dir)):
         p = os.path.join(projects_dir, name)
-        if not name.endswith(".jsonl") or os.path.getmtime(p) < cutoff:
+        if not name.endswith(".jsonl"):
             continue
         role = title(p)
+        if not learning._session_open(p, known):        # before the window: an old session can have closed since
+            closed.add(role)
+            continue
+        if os.path.getmtime(p) < cutoff:
+            continue
         if role:
             by_role.setdefault(role, []).append(p)
     os.makedirs(out_dir, exist_ok=True)
+    for role in closed - set(by_role) - {None, ""}:      # lessons drawn from a session that has since closed
+        if os.path.exists(os.path.join(out_dir, f"{safe(role)}.md")):
+            os.remove(os.path.join(out_dir, f"{safe(role)}.md"))
     reps = OrderedDict((role, _merge([learning.analyze(p, ignore, min_repeat=1) for p in paths]))
                        for role, paths in by_role.items())
     typed = sorted({w for r in reps.values() for w in r["typed"]}) if private else []   # every role's typed words

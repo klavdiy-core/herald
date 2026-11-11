@@ -13,6 +13,8 @@ import os
 import re
 from collections import OrderedDict
 
+from .memory import sources as memory_sources
+
 EXIT_LINE = re.compile(r"^Exit code (\d+)$", re.M)
 ERROR_LINE = re.compile(r"error|exception|denied|not found|no such|cannot|can't|failed|reserved|invalid|refused|"
                         r"timed out|ошибк|не найден|не удается|не удаётся|отказано", re.I)
@@ -119,7 +121,7 @@ def _events(path):
         for raw in f:
             try:
                 rec = json.loads(raw)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             # injected skill / command text and the summary written after a compaction are not the human
             if not isinstance(rec, dict) or rec.get("isMeta") or rec.get("isCompactSummary"):
@@ -249,8 +251,24 @@ def analyze(path, ignore=None, min_repeat=2):
             "not_lessons": not_lessons, "calls": len(calls), "failed_calls": sum(1 for c in calls if not c["ok"])}
 
 
-def analyze_many(paths, ignore=None):
+def _session_open(path, known):
+    """A session with one record a worker may not read is closed whole: a lesson drawn from it would carry its content."""
+    if known.scope_of(path) == "main":
+        return False
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if any(known.scope_of(path, label) == "main" for label in memory_sources.line_labels(line)):
+                return False
+    return True
+
+
+def analyze_many(paths, ignore=None, reader_scope="worker"):
     """One report over several sessions; each lesson knows in how many different sessions it happened."""
+    if reader_scope not in ("worker", "main"):
+        raise ValueError("unknown reader scope")
+    if reader_scope == "worker":
+        known = memory_sources.load()
+        paths = [p for p in paths if _session_open(p, known)]
     groups, out = OrderedDict(), {"recoveries": [], "corrections": [], "not_lessons": [], "typed": set(),
                                   "calls": 0, "failed_calls": 0}
     for p in paths:
