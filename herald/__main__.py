@@ -11,7 +11,26 @@ import sys
 from . import doctor, first_run, learning, recall, run, team, voice
 
 
+def persona_example():
+    """The example persona `init` copies: inside the package (pip install), else at the repo root (git clone)."""
+    pkg = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(pkg, "persona.example.md"), os.path.join(os.path.dirname(pkg), "persona.example.md")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:2] == ["mem", "golden"]:            # python -m herald mem golden --set S (--store R | --recall-db D) [--k N]
+        from . import golden
+        return golden.main(args[2:])
+    if args[:2] == ["mem", "diary"]:             # python -m herald mem diary import|check|last ... (organ 2, main-only)
+        from .memory import diary
+        return diary.cli(args[2:])
+    if args[:1] == ["mem"]:                      # python -m herald mem journal status --root R --kcore K  (read-only)
+        from . import journal
+        return journal.cli(args[1:])
     ap = argparse.ArgumentParser(prog="herald")
     ap.add_argument("cmd", choices=["init", "doctor", "run", "say", "learn", "team", "room", "recall"])
     ap.add_argument("--query", default="", help="recall: words to find in past sessions")
@@ -28,9 +47,8 @@ def main(argv=None):
     ap.add_argument("--since-hours", type=float, default=None, help="team: only sessions touched in this window")
     a = ap.parse_args(argv)
     if a.cmd == "init":                          # a control/ folder from one message to the bot; no JSON by hand
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return first_run.init(os.path.dirname(a.config) or "control", os.environ.get("HERALD_TELEGRAM_TOKEN", ""),
-                              persona_src=os.path.join(here, "persona.example.md"))
+                              persona_src=persona_example())
     if a.cmd == "recall":                        # transcript = a folder of Claude Code sessions
         if not a.transcript or not a.query:
             ap.error("recall needs a sessions folder and --query")
