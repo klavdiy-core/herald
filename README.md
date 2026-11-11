@@ -33,6 +33,13 @@ python -m herald doctor --config control/config.json  # PASS/FAIL per check: cla
 python -m herald run --config control/config.json
 ```
 
+Or install it as a command (standard library only, nothing else is pulled in):
+
+```sh
+pip install git+https://github.com/klavdiy-core/herald
+herald init        # the same steps as above: herald doctor ..., herald run ...
+```
+
 `init` checks the token, prints a six-digit code and makes whoever sends that code to the bot the owner (messages from before init, or without the code, do not count; no user id to look up), and writes
 `control/config.json` (a $5 daily cap, voice off) and `control/persona.md`. It never overwrites an existing file. For
 every option, see `config.example.json`.
