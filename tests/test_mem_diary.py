@@ -18,7 +18,7 @@ SUBJECT = "ENT-test-author"
 
 
 def entry(root, stamp="2026-11-01-101500", slug="heron-day", title="heron day", body="the heron stood still",
-          written_at="2026-11-01T10:15:00+02:00", tags=None, frontmatter=True, with_sha=True, extra="", folder=None):
+          written_at="2026-11-01T10:15:00+05:30", tags=None, frontmatter=True, with_sha=True, extra="", folder=None):
     y, m = stamp[:4], stamp[5:7]
     path = os.path.join(root, *(folder or (y, m)), "%s--%s.md" % (stamp, slug))
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -233,7 +233,7 @@ class Check(Base):
         self.assertEqual((code, lines[-1]), (4, "CHECK disk 1 store 1 legacy 0 bad_entry 1"))
 
     def test_the_day_of_written_at_wins_over_the_name_when_they_differ(self):
-        entry(self.root, stamp="2026-11-11-233000", slug="late", written_at="2026-11-12T00:30:00+02:00")
+        entry(self.root, stamp="2026-11-11-233000", slug="late", written_at="2026-11-12T00:30:00+05:30")
         self.imp()
         self.assertEqual(self.records()[0]["valid_time"]["from"], "2026-11-12")
 
@@ -367,7 +367,7 @@ class ControlRound1(Base):
 class LastAndRefusals(Base):
     def test_last_is_newest_first_with_id_day_and_title(self):
         entry(self.root, stamp="2026-11-01-101500", slug="older", title="older one")
-        entry(self.root, stamp="2026-11-03-101500", slug="newer", title="newer one", written_at="2026-11-03T10:15:00+02:00")
+        entry(self.root, stamp="2026-11-03-101500", slug="newer", title="newer one", written_at="2026-11-03T10:15:00+05:30")
         self.imp()
         code, lines = self.run_cli("last", "1", "--store", self.store_root)
         self.assertEqual((code, lines), (0, ["2026-11-03-101500--newer\t2026-11-03\tnewer one"]))

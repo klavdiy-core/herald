@@ -93,6 +93,21 @@ class Import(Base):
         self.imp()
         self.assertEqual(self.records()[fid(a)]["valid_time"]["from"], "2026-11-11T23:59:00" + facts.OFFSET)
 
+    def test_the_offset_is_utc_unless_the_environment_names_one(self):
+        # the offset was a fixed regional constant in the code; a public tool must not carry its author's zone
+        import importlib
+        old = os.environ.pop("HERALD_FACTS_TZ_OFFSET", None)
+        self.addCleanup(lambda: (os.environ.pop("HERALD_FACTS_TZ_OFFSET", None),
+                                 old is not None and os.environ.__setitem__("HERALD_FACTS_TZ_OFFSET", old),
+                                 importlib.reload(facts)))
+        self.assertEqual(importlib.reload(facts).OFFSET, "+00:00")
+        os.environ["HERALD_FACTS_TZ_OFFSET"] = "+05:30"
+        self.assertEqual(importlib.reload(facts).OFFSET, "+05:30")
+        for bad in ("3", "+3:00", "UTC", "+24:00", "+03:60"):
+            os.environ["HERALD_FACTS_TZ_OFFSET"] = bad
+            with self.assertRaises(ValueError, msg=bad):
+                importlib.reload(facts)
+
     def test_the_evidence_is_the_line_itself(self):
         a = line("the door is green")
         self.write([a])

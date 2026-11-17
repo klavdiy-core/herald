@@ -147,7 +147,7 @@ class Validity(Attack):
 
     def test_respelling_the_same_instant_changes_nothing(self):
         mid = self.s.add(rec("x", valid_time={"from": "2026-01-01T12:00:00+00:00", "to": None}), "x")
-        self.s.correct(mid, 1, {"valid_time": {"from": "2026-01-01T14:00:00+02:00", "to": None}}, "r", OP)
+        self.s.correct(mid, 1, {"valid_time": {"from": "2026-01-01T17:30:00+05:30", "to": None}}, "r", OP)
         self.assertIsNone(self.s.history(mid)[0]["valid_time"]["to"])
 
     def test_as_of_does_not_show_a_later_closing(self):

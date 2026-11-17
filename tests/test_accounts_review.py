@@ -10,7 +10,7 @@ R8 a secret-shaped or email KEY in the registry is refused without echoing it
 R9 an unknown account that looks like a token is not echoed; a non-string account is a plain refusal
 R10 audit lines name a transcript by its file name only, never the project folder
 R11 an unknown account in the usage log that looks like a token is not echoed into the audit
-R12 resets with a non-zero UTC offset are read (19:20+03:00 = 16:20Z)
+R12 resets with a non-zero UTC offset are read (21:50+05:30 = 16:20Z)
 R13 the usage log and the registry survive a BOM and a stray non-UTF8 byte
 R14 a state file that is not an object is reset with an audit line, not a crash
 R15 state trimming drops the OLDEST keys, never the one just added
@@ -122,7 +122,7 @@ class Logic(Base):
         self.assertEqual(p3, [], "R6: no readable reset = no window = no proposal: %r" % (p3,))
 
     def test_R12_offset_is_read(self):
-        self.assertEqual(A._epoch("2026-11-07T19:20:00+03:00"), A._epoch("2026-11-07T16:20:00Z"))
+        self.assertEqual(A._epoch("2026-11-07T21:50:00+05:30"), A._epoch("2026-11-07T16:20:00Z"))
         self.assertIsNotNone(A._epoch("2026-11-07T16:20:00.123456+00:00"))
 
     def test_R16_half_up(self):

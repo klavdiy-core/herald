@@ -25,7 +25,19 @@ import re
 import sys
 
 MARK = "## ЖИВЫЕ ФАКТЫ (append-only, с 19.08.2026)"
-OFFSET = "+03:00"                   # the facts tool writes local time at this fixed offset: the one place it is named
+
+
+def _offset():
+    """The UTC offset the facts tool's local times are written in: HERALD_FACTS_TZ_OFFSET as +HH:MM / -HH:MM, else +00:00.
+    A wrong spelling refuses at import - a silently wrong zone would shift every fact's time."""
+    v = os.environ.get("HERALD_FACTS_TZ_OFFSET", "+00:00")
+    m = re.fullmatch(r"[+-](\d\d):(\d\d)", v)
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError("HERALD_FACTS_TZ_OFFSET must look like +HH:MM or -HH:MM, got %r" % v)
+    return v
+
+
+OFFSET = _offset()                  # the one place the offset is named
 TICK = "✔"
 TILDE = re.compile(r"~(?!\s*\d)")    # "~ an inference" is a mark; "~21:55" is an approximate time, not one
 LINE_RE = re.compile(r"^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\] \((her|us|me)\) (.+)$")
